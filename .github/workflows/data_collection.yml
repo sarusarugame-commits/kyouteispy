@@ -1,4 +1,4 @@
-name: 爆速データ収集 (4並列)
+name: 爆速データ収集 (8並列・時間切れ対策版)
 
 on:
   workflow_dispatch:
@@ -7,20 +7,32 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false # 1つが失敗しても他を止めない
       matrix:
-        # 1ヶ月を4つの期間に分割して同時実行！
         include:
-          - period: "week1"
+          - period: "p1"
             start: "2025-01-01"
+            end: "2025-01-04"
+          - period: "p2"
+            start: "2025-01-05"
             end: "2025-01-08"
-          - period: "week2"
+          - period: "p3"
             start: "2025-01-09"
+            end: "2025-01-12"
+          - period: "p4"
+            start: "2025-01-13"
             end: "2025-01-16"
-          - period: "week3"
+          - period: "p5"
             start: "2025-01-17"
+            end: "2025-01-20"
+          - period: "p6"
+            start: "2025-01-21"
             end: "2025-01-24"
-          - period: "week4"
+          - period: "p7"
             start: "2025-01-25"
+            end: "2025-01-28"
+          - period: "p8"
+            start: "2025-01-29"
             end: "2025-01-31"
 
     steps:
@@ -33,6 +45,8 @@ jobs:
       - name: Run
         run: python collector.py --start ${{ matrix.start }} --end ${{ matrix.end }}
       - name: Upload
+        # タイムアウトしてもそれまで取った分を保存するように設定
+        if: always() 
         uses: actions/upload-artifact@v4
         with:
           name: data-${{ matrix.period }}
