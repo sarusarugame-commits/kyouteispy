@@ -1,4 +1,4 @@
-name: 爆速データ収集 (8並列・時間切れ対策版)
+name: 超・爆速データ収集 (16並列)
 
 on:
   workflow_dispatch:
@@ -7,45 +7,41 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false # 1つが失敗しても他を止めない
+      fail-fast: false
       matrix:
         include:
-          - period: "p1"
-            start: "2025-01-01"
-            end: "2025-01-04"
-          - period: "p2"
-            start: "2025-01-05"
-            end: "2025-01-08"
-          - period: "p3"
-            start: "2025-01-09"
-            end: "2025-01-12"
-          - period: "p4"
-            start: "2025-01-13"
-            end: "2025-01-16"
-          - period: "p5"
-            start: "2025-01-17"
-            end: "2025-01-20"
-          - period: "p6"
-            start: "2025-01-21"
-            end: "2025-01-24"
-          - period: "p7"
-            start: "2025-01-25"
-            end: "2025-01-28"
-          - period: "p8"
-            start: "2025-01-29"
-            end: "2025-01-31"
+          # 2日ずつ、全16部隊で一斉攻撃！
+          - { period: "p01", start: "2025-01-01", end: "2025-01-02" }
+          - { period: "p02", start: "2025-01-03", end: "2025-01-04" }
+          - { period: "p03", start: "2025-01-05", end: "2025-01-06" }
+          - { period: "p04", start: "2025-01-07", end: "2025-01-08" }
+          - { period: "p05", start: "2025-01-09", end: "2025-01-10" }
+          - { period: "p06", start: "2025-01-11", end: "2025-01-12" }
+          - { period: "p07", start: "2025-01-13", end: "2025-01-14" }
+          - { period: "p08", start: "2025-01-15", end: "2025-01-16" }
+          - { period: "p09", start: "2025-01-17", end: "2025-01-18" }
+          - { period: "p10", start: "2025-01-19", end: "2025-01-20" }
+          - { period: "p11", start: "2025-01-21", end: "2025-01-22" }
+          - { period: "p12", start: "2025-01-23", end: "2025-01-24" }
+          - { period: "p13", start: "2025-01-25", end: "2025-01-26" }
+          - { period: "p14", start: "2025-01-27", end: "2025-01-28" }
+          - { period: "p15", start: "2025-01-29", end: "2025-01-30" }
+          - { period: "p16", start: "2025-01-31", end: "2025-01-31" }
 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install
+      - name: Install dependencies
         run: pip install polars requests beautifulsoup4
-      - name: Run
+      
+      - name: Run Collector
+        # もし何かあっても止まらずログを残す
+        continue-on-error: true 
         run: python collector.py --start ${{ matrix.start }} --end ${{ matrix.end }}
-      - name: Upload
-        # タイムアウトしてもそれまで取った分を保存するように設定
+      
+      - name: Upload Artifact
         if: always() 
         uses: actions/upload-artifact@v4
         with:
