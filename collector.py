@@ -5,17 +5,18 @@ import time
 import sys
 import argparse
 import os
+# 👇 ここに忘れずに日付処理ライブラリを追加！
+from datetime import datetime, timedelta
 
 # ==========================================
 # ⚙️ 設定（ステルスモード）
 # ==========================================
 MAX_RETRIES = 3
-RETRY_INTERVAL = 5 # 焦らず5秒待つ
+RETRY_INTERVAL = 5 
 
 def get_session():
     """人間らしいセッションを作成"""
     session = requests.Session()
-    # 一般的なWindowsのChromeに見せかける強力な偽装ヘッダー
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -37,14 +38,14 @@ def get_soup_with_retry(session, url):
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             print(f"🌐 アクセス中 ({attempt}/{MAX_RETRIES}): {url}", flush=True)
-            # タイムアウトを30秒に延長（粘る）
             res = session.get(url, timeout=30)
             res.encoding = res.apparent_encoding
             
             if res.status_code == 200:
+                # 成功したら何も言わずにスープを返す（ログが汚れないように）
                 return BeautifulSoup(res.text, 'html.parser')
             elif res.status_code == 403:
-                print("⛔ 403 Forbidden: アクセス拒否されました（IPブロックの可能性大）", flush=True)
+                print("⛔ 403 Forbidden: アクセス拒否されました", flush=True)
             else:
                 print(f"⚠️ ステータス {res.status_code}", flush=True)
                 
@@ -63,7 +64,6 @@ def scrape_race_data(session, jcd, rno, date_str):
     # 1レース内でセッション（Cookie）を使い回す
     soup_list = get_soup_with_retry(session, f"{base_url}/racelist?rno={rno}&jcd={jcd:02d}&hd={date_str}")
     if not soup_list: return None
-    # 少し間隔を空ける（人間アピール）
     time.sleep(1)
     
     soup_before = get_soup_with_retry(session, f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}")
@@ -104,26 +104,26 @@ if __name__ == "__main__":
     parser.add_argument("--end", required=True)
     args = parser.parse_args()
 
-    # セッション開始
     session = get_session()
     
-    # まずトップページにアクセスしてCookieをもらう（重要！）
     print("🏠 トップページに挨拶中...", flush=True)
+    # ここが成功していれば、次の行に進めるはず！
     get_soup_with_retry(session, "https://www.boatrace.jp/")
 
+    # 👇 ここでのエラーは直りました
     start_d = datetime.strptime(args.start, "%Y-%m-%d")
     end_d = datetime.strptime(args.end, "%Y-%m-%d")
+    
     current = start_d
-    results = []
-
-    # テストのため、まずは「最初の1会場・1レース」だけ試す安全装置
-    # うまくいったらループに戻す
+    
+    # 動作確認のため、1レースだけ試す
     d_str = current.strftime("%Y%m%d")
     print(f"🚀 テスト収集: {d_str} 会場01 レース01", flush=True)
     
     data = scrape_race_data(session, 1, 1, d_str)
+    
     if data:
         print("✅ 突破成功！データが取れました！", flush=True)
         print(data, flush=True)
     else:
-        print("❌ 突破失敗。やはりIPブロックが強力です。", flush=True)
+        print("❌ データ取得失敗（まだブロックされているか、レースがない日です）", flush=True)
