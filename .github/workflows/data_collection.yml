@@ -1,45 +1,34 @@
-name: Debug One Day (Final Check)
+name: Debug HTML Capture
 
 on:
-  workflow_dispatch: # 手動実行ボタン
+  workflow_dispatch: # 手動実行
 
 jobs:
-  debug_collect:
+  debug_run:
     runs-on: ubuntu-latest
     
     steps:
-      - name: コード取得
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Python準備
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: ライブラリ導入
+      - name: Install Dependencies
         run: pip install pandas requests beautifulsoup4
 
-      - name: 1日分デバッグ実行
-        # -u をつけてログを即時表示
-        # 1月1日だけを指定して実行します
+      - name: Run Debug Collector
+        # -u でログを即時出力し、1日分だけ実行してHTMLを保存させる
         run: python -u collector.py --start 2025-01-01 --end 2025-01-01
 
-      - name: 成果物アップロード
-        if: success()
+      - name: Upload Evidence (HTML & CSV)
+        if: always() # 失敗しても必ず証拠を持ち帰る
         uses: actions/upload-artifact@v4
         with:
-          name: debug-data-final
-          path: data/*.csv
-
-      - name: Discord通知
-        if: always()
-        run: |
-          if [ "${{ job.status }}" == "success" ]; then
-            MSG="✅ **デバッグ成功**\n風速エラーは解消されました！CSVを確認してください。"
-          else
-            MSG="❌ **デバッグ失敗**\nまだエラーがあります。ログを確認してください。"
-          fi
-          curl -H "Content-Type: application/json" \
-               -X POST \
-               -d "{\"username\": \"Debug_Bot\", \"content\": \"$MSG\"}" \
-               ${{ secrets.DISCORD_WEBHOOK_URL }}
+          name: debug-evidence
+          # 保存されたHTMLとCSVをすべて回収
+          path: |
+            *.html
+            data/*.csv
