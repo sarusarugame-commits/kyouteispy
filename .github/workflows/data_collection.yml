@@ -1,34 +1,58 @@
-name: Debug HTML Capture
+name: Boat Race Full Collect (16 Matrix)
 
 on:
-  workflow_dispatch: # 手動実行
+  workflow_dispatch:
 
 jobs:
-  debug_run:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  collect:
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1月分(31日間)を16分割して担当
+        # 1台あたり約2日分を担当します
+        include:
+          - { p: "01", s: "2025-01-01", e: "2025-01-02" }
+          - { p: "02", s: "2025-01-03", e: "2025-01-04" }
+          - { p: "03", s: "2025-01-05", e: "2025-01-06" }
+          - { p: "04", s: "2025-01-07", e: "2025-01-08" }
+          - { p: "05", s: "2025-01-09", e: "2025-01-10" }
+          - { p: "06", s: "2025-01-11", e: "2025-01-12" }
+          - { p: "07", s: "2025-01-13", e: "2025-01-14" }
+          - { p: "08", s: "2025-01-15", e: "2025-01-16" }
+          - { p: "09", s: "2025-01-17", e: "2025-01-18" }
+          - { p: "10", s: "2025-01-19", e: "2025-01-20" }
+          - { p: "11", s: "2025-01-21", e: "2025-01-22" }
+          - { p: "12", s: "2025-01-23", e: "2025-01-24" }
+          - { p: "13", s: "2025-01-25", e: "2025-01-26" }
+          - { p: "14", s: "2025-01-27", e: "2025-01-28" }
+          - { p: "15", s: "2025-01-29", e: "2025-01-30" }
+          - { p: "16", s: "2025-01-31", e: "2025-01-31" }
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - run: pip install pandas requests beautifulsoup4
 
-      - name: Install Dependencies
-        run: pip install pandas requests beautifulsoup4
+      - name: データ収集
+        run: python -u collector.py --start ${{ matrix.s }} --end ${{ matrix.e }}
 
-      - name: Run Debug Collector
-        # -u でログを即時出力し、1日分だけ実行してHTMLを保存させる
-        run: python -u collector.py --start 2025-01-01 --end 2025-01-01
-
-      - name: Upload Evidence (HTML & CSV)
-        if: always() # 失敗しても必ず証拠を持ち帰る
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: debug-evidence
-          # 保存されたHTMLとCSVをすべて回収
-          path: |
-            *.html
-            data/*.csv
+          name: data-${{ matrix.p }}
+          path: data/*.csv
+
+  notify:
+    needs: collect
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Discord通知
+        run: |
+          curl -H "Content-Type: application/json" \
+               -X POST \
+               -d "{\"username\": \"Sniper_Bot\", \"content\": \"🎉 **全データの収集が完了しました！**\nArtifactsからCSVをダウンロードして結合してください。\"}" \
+               ${{ secrets.DISCORD_WEBHOOK_URL }}
