@@ -1,48 +1,43 @@
-name: Debug Data Collector
+name: Boat Race Debug Collector
 
 on:
-  workflow_dispatch: # GitHubのActionsタブから手動で実行
+  workflow_dispatch: # 手動で実行
 
 jobs:
-  debug_collect:
+  collect:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: コードをチェックアウト
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Pythonをセットアップ
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 依存ライブラリをインストール
+      - name: Install
+        run: pip install pandas requests beautifulsoup4
+
+      - name: Run Collector
+        # デバッグとして2025年1月1日の1日分だけを実行
+        run: python collector.py --start 2025-01-01 --end 2025-01-01
+
+      - name: Discord Notification
+        if: always() # 成功・失敗に関わらず通知
         run: |
-          pip install pandas requests beautifulsoup4
+          if [ "${{ job.status }}" == "success" ]; then
+            MSG="✅ **データ収集成功**\n1日分の純粋データ収集が完了しました。"
+          else
+            MSG="⚠️ **データ収集失敗**\nエラーが発生しました。ログを確認してください。"
+          fi
+          curl -H "Content-Type: application/json" \
+               -X POST \
+               -d "{\"username\": \"Sniper_Collector\", \"content\": \"$MSG\"}" \
+               ${{ secrets.DISCORD_WEBHOOK_URL }}
 
-      - name: デバッグ収集を実行
-        id: run_script
-        run: python debug_collector.py
-
-      - name: 成功通知をDiscordに送信
+      - name: Upload CSV
         if: success()
-        run: |
-          curl -H "Content-Type: application/json" \
-               -X POST \
-               -d "{\"username\": \"Sniper_Debug_Bot\", \"content\": \"✅ **データ収集完了**\n1日分のデバッグスクレイピングが正常に終了しました。CSVを確認してください。\"}" \
-               ${{ secrets.DISCORD_WEBHOOK_URL }}
-
-      - name: 失敗通知をDiscordに送信
-        if: failure()
-        run: |
-          curl -H "Content-Type: application/json" \
-               -X POST \
-               -d "{\"username\": \"Sniper_Debug_Bot\", \"content\": \"⚠️ **データ収集エラー**\nスクレイピング実行中に問題が発生しました。GitHubのログを確認してください。\"}" \
-               ${{ secrets.DISCORD_WEBHOOK_URL }}
-
-      - name: 取得したCSVを保存 (Artifact)
-        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-csv-data
-          path: debug_data_*.csv
+          name: debug-data
+          path: data/*.csv
