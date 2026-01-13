@@ -6,8 +6,7 @@ import sys
 import argparse
 import os
 import re
-# 👇 忘れずにインポートを追加しました
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta # 👈 これでエラーは消えます
 
 # ログを即時表示
 sys.stdout.reconfigure(line_buffering=True)
@@ -44,7 +43,7 @@ def clean_text(text):
 
 def scrape_race_data(session, jcd, rno, date_str):
     base_url = "https://www.boatrace.jp/owpc/pc/race"
-    print(f"🔍 {jcd}場 {rno}R: ", end="")
+    print(f"🔍 {date_str} {jcd}場 {rno}R: ", end="")
     
     # 3ページ取得
     soup_list = get_soup_with_retry(session, f"{base_url}/racelist?rno={rno}&jcd={jcd:02d}&hd={date_str}")
@@ -73,7 +72,6 @@ def scrape_race_data(session, jcd, rno, date_str):
         # --- 2. 正解ラベル (1着) ---
         res1 = 0
         try:
-            # 1着の行を探す（艇番画像やテキストから判定）
             res_rows = soup_res.select(".is-p_1-1")
             if res_rows:
                 rank1_boat = clean_text(res_rows[0].select("td")[1].text)
@@ -85,26 +83,20 @@ def scrape_race_data(session, jcd, rno, date_str):
         # --- 3. 展示タイム & 各艇データ ---
         temp_ex_times = []
         
-        # 枠ごとのループ (1~6号艇)
         for i in range(1, 7):
-            # 🔥 修正点: クラス名(tbody.is-p_0-1)に頼らず、艇番色クラス(is-boatColor1)から親を辿る
-            # 直前情報ページで i号艇のエリアを探す
+            # 艇番の色クラスから探す確実な方法
             boat_cell = soup_before.select_one(f".is-boatColor{i}")
             if not boat_cell:
                 print(f"⚠️ {i}号艇なし ", end="")
                 return None
             
-            # 親のtbodyを取得
             tbody = boat_cell.find_parent("tbody")
             tds = tbody.select("td")
             
-            # 展示タイム (通常5番目だが念のため確認)
-            # [写真, 選手名, 体重, 展示, チルト...]
+            # [写真, 選手名, 体重, 展示, チルト...] -> 通常はindex 4
             ex_val = clean_text(tds[4].text)
-            
             if not ex_val: ex_val = clean_text(tds[5].text) # ズレ対策
             
-            # 欠損チェック
             if not ex_val or ex_val == "-" or ex_val == "0.00":
                 print(f"⚠️ {i}号艇展示欠損 ", end="")
                 return None
@@ -115,11 +107,10 @@ def scrape_race_data(session, jcd, rno, date_str):
                 print(f"❌ 数値化不可[{ex_val}] ", end="")
                 return None
 
-        # --- 4. 出走表データ (勝率・モーター) ---
+        # --- 4. 出走表データ ---
         row = {'date': date_str, 'jcd': jcd, 'rno': rno, 'wind': wind, 'res1': res1}
         
         for i in range(1, 7):
-            # 出走表ページでも同様に艇番から探す
             boat_cell_list = soup_list.select_one(f".is-boatColor{i}")
             if not boat_cell_list: return None
             
@@ -156,38 +147,30 @@ if __name__ == "__main__":
 
     os.makedirs("data", exist_ok=True)
     session = get_session()
+    
+    # 認証
     try:
         session.get("https://www.boatrace.jp/", timeout=10)
     except:
         pass
 
-    start_d = datetime.strptime(args.start, "%Y-%m-%d")
-    end_d = datetime.strptime(args.end, "%Y-%m-%d")
-    current = start_d
+    # 🔥 1レース限定デバッグ 🔥
+    # 1月1日、桐生(01)、1R 固定
+    d_str = "20250101"
+    jcd = 1
+    rno = 1
     
-    print(f"🚀 修正版コレクター開始: {args.start} 〜 {args.end}")
+    print(f"🚀 1レース限定デバッグ開始")
     
     results = []
+    data = scrape_race_data(session, jcd, rno, d_str)
     
-    while current <= end_d:
-        d_str = current.strftime("%Y%m%d")
-        
-        # まずは全会場を回してみる
-        for jcd in range(1, 25):
-            # 開催がない会場はスキップされるので全指定でOK
-            for rno in range(1, 13):
-                data = scrape_race_data(session, jcd, rno, d_str)
-                if data:
-                    results.append(data)
-                # ログが見やすいように少し待機
-                # time.sleep(0.5) 
-        
-        current += timedelta(days=1)
-
-    if results:
+    if data:
+        results.append(data)
         df = pd.DataFrame(results)
-        filename = f"data/pure_data_{args.start}_{args.end}.csv"
+        filename = f"data/pure_data_debug_1R.csv"
         df.to_csv(filename, index=False)
-        print(f"\n🎉 完了！CSV保存しました: {filename} ({len(df)}レース)")
+        print(f"\n🎉 完了！CSV保存しました: {filename}")
+        print(df) # ログに中身を表示
     else:
-        print("\n💀 データが取れませんでした。")
+        print("\n💀 データ取得失敗")
