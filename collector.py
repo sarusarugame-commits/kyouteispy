@@ -5,11 +5,11 @@ import time
 import sys
 import argparse
 import os
-# 👇 ここに忘れずに日付処理ライブラリを追加！
+import traceback # エラー詳細を見るために追加
 from datetime import datetime, timedelta
 
 # ==========================================
-# ⚙️ 設定（ステルスモード）
+# ⚙️ 設定（診断モード）
 # ==========================================
 MAX_RETRIES = 3
 RETRY_INTERVAL = 5 
@@ -21,14 +21,7 @@ def get_session():
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
         'Referer': 'https://www.boatrace.jp/',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1'
     }
     session.headers.update(headers)
     return session
@@ -42,10 +35,13 @@ def get_soup_with_retry(session, url):
             res.encoding = res.apparent_encoding
             
             if res.status_code == 200:
-                # 成功したら何も言わずにスープを返す（ログが汚れないように）
-                return BeautifulSoup(res.text, 'html.parser')
+                soup = BeautifulSoup(res.text, 'html.parser')
+                # 🔥 ここでページタイトルを確認！
+                title = soup.title.text.strip() if soup.title else "タイトルなし"
+                print(f"📄 ページタイトル: {title}", flush=True)
+                return soup
             elif res.status_code == 403:
-                print("⛔ 403 Forbidden: アクセス拒否されました", flush=True)
+                print("⛔ 403 Forbidden: アクセス拒否", flush=True)
             else:
                 print(f"⚠️ ステータス {res.status_code}", flush=True)
                 
@@ -53,7 +49,6 @@ def get_soup_with_retry(session, url):
             print(f"💥 エラー: {e}", flush=True)
         
         if attempt < MAX_RETRIES:
-            print(f"💤 {RETRY_INTERVAL}秒 待機...", flush=True)
             time.sleep(RETRY_INTERVAL)
             
     return None
@@ -61,19 +56,23 @@ def get_soup_with_retry(session, url):
 def scrape_race_data(session, jcd, rno, date_str):
     base_url = "https://www.boatrace.jp/owpc/pc/race"
     
-    # 1レース内でセッション（Cookie）を使い回す
     soup_list = get_soup_with_retry(session, f"{base_url}/racelist?rno={rno}&jcd={jcd:02d}&hd={date_str}")
     if not soup_list: return None
-    time.sleep(1)
     
+    # ここではテストのため、あえて間隔を詰めずに原因を探る
     soup_before = get_soup_with_retry(session, f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}")
     if not soup_before: return None
-    time.sleep(1)
 
     soup_res = get_soup_with_retry(session, f"{base_url}/raceresult?rno={rno}&jcd={jcd:02d}&hd={date_str}")
     if not soup_res: return None
 
     try:
+        # 要素取得テスト
+        if soup_before.select_one('.weather1_bodyUnitLabelData'):
+            print("✅ 風速データ要素: あり", flush=True)
+        else:
+            print("❌ 風速データ要素: なし（ページの中身が違う可能性大）", flush=True)
+
         w_text = soup_before.select_one('.weather1_bodyUnitLabelData').text.replace('m','').strip()
         wind = float(w_text) if w_text else 0.0
 
@@ -82,20 +81,26 @@ def scrape_race_data(session, jcd, rno, date_str):
 
         temp_ex_times = []
         for i in range(1, 7):
-            ex_val = soup_before.select(f'tbody.is-p_0-{i}')[0].select('td')[4].text.strip()
+            ex_elem = soup_before.select(f'tbody.is-p_0-{i}')
+            if not ex_elem:
+                print(f"❌ {i}号艇の展示データが見つかりません", flush=True)
+                return None
+                
+            ex_val = ex_elem[0].select('td')[4].text.strip()
             if not ex_val or ex_val == "-" or float(ex_val) <= 0:
+                print(f"⚠️ {i}号艇の展示タイムが無効: {ex_val}", flush=True)
                 return None
             temp_ex_times.append(float(ex_val))
 
+        # データ構築
         row = {'date': date_str, 'jcd': jcd, 'rno': rno, 'wind': wind, 'res1': res1}
-        for i in range(1, 7):
-            tbody = soup_list.select(f'tbody.is-p_0-{i}')[0].select('td')
-            row[f'wr{i}'] = float(tbody[3].select_one('div').text.split()[0])
-            row[f'mo{i}'] = float(tbody[6].select_one('div').text.split()[0])
-            row[f'ex{i}'] = temp_ex_times[i-1]
-
+        # (中略: データ格納処理)
+        
         return row
-    except:
+
+    except Exception as e:
+        print("💥 パースエラー発生！詳細:", flush=True)
+        print(traceback.format_exc(), flush=True) # エラーの正体を全部出す
         return None
 
 if __name__ == "__main__":
@@ -107,23 +112,13 @@ if __name__ == "__main__":
     session = get_session()
     
     print("🏠 トップページに挨拶中...", flush=True)
-    # ここが成功していれば、次の行に進めるはず！
     get_soup_with_retry(session, "https://www.boatrace.jp/")
 
-    # 👇 ここでのエラーは直りました
-    start_d = datetime.strptime(args.start, "%Y-%m-%d")
-    end_d = datetime.strptime(args.end, "%Y-%m-%d")
-    
-    current = start_d
-    
-    # 動作確認のため、1レースだけ試す
-    d_str = current.strftime("%Y%m%d")
-    print(f"🚀 テスト収集: {d_str} 会場01 レース01", flush=True)
-    
-    data = scrape_race_data(session, 1, 1, d_str)
+    # 1/1 桐生(01) 1R でテスト
+    print(f"🚀 診断実行: 20250101 会場01 レース01", flush=True)
+    data = scrape_race_data(session, 1, 1, "20250101")
     
     if data:
-        print("✅ 突破成功！データが取れました！", flush=True)
-        print(data, flush=True)
+        print("✅ 成功！", flush=True)
     else:
-        print("❌ データ取得失敗（まだブロックされているか、レースがない日です）", flush=True)
+        print("❌ 失敗。上のログを確認してください。", flush=True)
