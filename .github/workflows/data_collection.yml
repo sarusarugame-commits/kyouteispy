@@ -1,197 +1,93 @@
-import pandas as pd
-import requests
-from bs4 import BeautifulSoup
-import time
-import sys
-import argparse
-import os
-import re
-from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
+name: Full Auto Boat Race 2025
 
-# ログを即時表示
-sys.stdout.reconfigure(line_buffering=True)
+on:
+  workflow_dispatch:
 
-# ==========================================
-# ⚙️ 設定（爆速並列モード）
-# ==========================================
-MAX_RETRIES = 3
-RETRY_INTERVAL = 3
-MAX_WORKERS = 8  # 1つの会場で同時に処理するスレッド数
+permissions:
+  contents: write
 
-def get_session():
-    session = requests.Session()
-    # 並列処理用に接続プールを増やす
-    adapter = HTTPAdapter(
-        pool_connections=MAX_WORKERS,
-        pool_maxsize=MAX_WORKERS,
-        max_retries=Retry(total=MAX_RETRIES, backoff_factor=1)
-    )
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    }
-    session.headers.update(headers)
-    return session
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { s: "2025-01-01", e: "2025-01-19" }
+          - { s: "2025-01-20", e: "2025-02-07" }
+          - { s: "2025-02-08", e: "2025-02-26" }
+          - { s: "2025-02-27", e: "2025-03-17" }
+          - { s: "2025-03-18", e: "2025-04-05" }
+          - { s: "2025-04-06", e: "2025-04-24" }
+          - { s: "2025-04-25", e: "2025-05-13" }
+          - { s: "2025-05-14", e: "2025-06-01" }
+          - { s: "2025-06-02", e: "2025-06-20" }
+          - { s: "2025-06-21", e: "2025-07-09" }
+          - { s: "2025-07-10", e: "2025-07-28" }
+          - { s: "2025-07-29", e: "2025-08-16" }
+          - { s: "2025-08-17", e: "2025-09-04" }
+          - { s: "2025-09-05", e: "2025-09-23" }
+          - { s: "2025-09-24", e: "2025-10-12" }
+          - { s: "2025-10-13", e: "2025-10-31" }
+          - { s: "2025-11-01", e: "2025-11-19" }
+          - { s: "2025-11-20", e: "2025-12-08" }
+          - { s: "2025-12-09", e: "2025-12-20" }
+          - { s: "2025-12-21", e: "2025-12-31" }
 
-def get_soup_with_retry(session, url):
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            res = session.get(url, timeout=20) # タイムアウトは少し短めに
-            res.encoding = res.apparent_encoding
-            if res.status_code == 200:
-                return BeautifulSoup(res.text, 'html.parser')
-        except:
-            pass
-        time.sleep(RETRY_INTERVAL)
-    return None
-
-def clean_text(text):
-    if not text: return ""
-    return text.replace("\n", "").replace("\r", "").replace(" ", "").replace("\u3000", "").strip()
-
-def scrape_race_data(session, jcd, rno, date_str):
-    """修正済みのパースロジック"""
-    base_url = "https://www.boatrace.jp/owpc/pc/race"
-    
-    # 3ページ取得
-    soup_list = get_soup_with_retry(session, f"{base_url}/racelist?rno={rno}&jcd={jcd:02d}&hd={date_str}")
-    soup_before = get_soup_with_retry(session, f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}")
-    soup_res = get_soup_with_retry(session, f"{base_url}/raceresult?rno={rno}&jcd={jcd:02d}&hd={date_str}")
-
-    if not all([soup_list, soup_before, soup_res]):
-        return None
-
-    try:
-        # --- 1. 風速取得 ---
-        wind = 0.0
-        try:
-            wind_elem = soup_before.find(string=re.compile("風速"))
-            if wind_elem:
-                parent = wind_elem.find_parent(class_="weather1_bodyUnit")
-                if parent:
-                    data_elem = parent.select_one(".weather1_bodyUnitLabelData")
-                    if data_elem:
-                        w_text = clean_text(data_elem.text).replace("m", "")
-                        wind = float(w_text)
-        except:
-            pass 
-
-        # --- 2. 正解ラベル (1着) ---
-        res1 = 0
-        try:
-            res_rows = soup_res.select(".is-p_1-1")
-            if res_rows:
-                rank1_boat = clean_text(res_rows[0].select("td")[1].text)
-                if rank1_boat == "1":
-                    res1 = 1
-        except:
-            pass
-
-        # --- 3. 展示タイム & 各艇データ ---
-        temp_ex_times = []
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pandas requests beautifulsoup4
+      
+      - name: Scrape
+        run: python collector.py --start ${{ matrix.s }} --end ${{ matrix.e }}
         
-        for i in range(1, 7):
-            # 艇番の色クラスから探す確実な方法
-            boat_cell = soup_before.select_one(f".is-boatColor{i}")
-            if not boat_cell: return None
+      - name: Upload Chunk
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.s }}
+          path: data/*.csv
 
-            tbody = boat_cell.find_parent("tbody")
-            tds = tbody.select("td")
+  merge_and_push:
+    needs: collect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pandas
 
-            # [写真, 選手名, 体重, 展示, チルト...] -> 通常はindex 4
-            ex_val = clean_text(tds[4].text)
-            if not ex_val: ex_val = clean_text(tds[5].text) # ズレ対策
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_data
+          pattern: chunk-*
+          merge-multiple: true
 
-            # データ欠損時はスキップ（元のロジック通り）
-            if not ex_val or ex_val == "-" or ex_val == "0.00":
-                return None
-            
-            try:
-                temp_ex_times.append(float(ex_val))
-            except:
-                return None
+      - name: Merge CSVs
+        shell: python
+        run: |
+          import pandas as pd
+          import glob
+          import os
+          
+          files = glob.glob("all_data/*.csv")
+          if files:
+              df_list = [pd.read_csv(f) for f in files]
+              master_df = pd.concat(df_list, ignore_index=True)
+              master_df = master_df.sort_values(by=['date', 'jcd', 'rno'])
+              master_df.to_csv("FINAL_BOAT_DATA_2025.csv", index=False)
+              print(f"Merge Complete! Total rows: {len(master_df)}")
+          else:
+              print("No CSV files found!")
 
-        # --- 4. 出走表データ ---
-        row = {'date': date_str, 'jcd': jcd, 'rno': rno, 'wind': wind, 'res1': res1}
-        
-        for i in range(1, 7):
-            boat_cell_list = soup_list.select_one(f".is-boatColor{i}")
-            if not boat_cell_list: return None
-
-            tbody_list = boat_cell_list.find_parent("tbody")
-            tds_list = tbody_list.select("td")
-
-            try:
-                # 全国勝率
-                row[f'wr{i}'] = float(re.findall(r"\d+\.\d+", tds_list[3].text)[0])
-                # モーター2連率
-                nums = re.findall(r"\d+\.\d+", tds_list[6].text)
-                row[f'mo{i}'] = float(nums[0]) if len(nums) >= 1 else 0.0
-            except:
-                row[f'wr{i}'] = 0.0
-                row[f'mo{i}'] = 0.0
-
-            row[f'ex{i}'] = temp_ex_times[i-1]
-
-        return row
-
-    except Exception:
-        return None
-
-def process_race_parallel(args):
-    """並列処理用のラッパー関数"""
-    session, jcd, rno, date_str = args
-    return scrape_race_data(session, jcd, rno, date_str)
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--start", required=True)
-    parser.add_argument("--end", required=True)
-    args = parser.parse_args()
-
-    os.makedirs("data", exist_ok=True)
-    session = get_session()
-
-    start_d = datetime.strptime(args.start, "%Y-%m-%d")
-    end_d = datetime.strptime(args.end, "%Y-%m-%d")
-    current = start_d
-
-    print(f"🚀 並列データ収集開始: {args.start} 〜 {args.end}")
-
-    results = []
-    
-    while current <= end_d:
-        d_str = current.strftime("%Y%m%d")
-        print(f"📅 {d_str} 並列スキャン中...", end="", flush=True)
-        
-        # 1日分の全レース（24会場×12レース）のタスクを作成
-        tasks = []
-        for jcd in range(1, 25):
-            for rno in range(1, 13):
-                tasks.append((session, jcd, rno, d_str))
-        
-        # マルチスレッド実行
-        day_results = []
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = executor.map(process_race_parallel, tasks)
-            for res in futures:
-                if res:
-                    day_results.append(res)
-        
-        print(f" -> {len(day_results)}レース取得")
-        results.extend(day_results)
-        
-        current += timedelta(days=1)
-
-    if results:
-        df = pd.DataFrame(results)
-        filename = f"data/chunk_{args.start}.csv"
-        df.to_csv(filename, index=False)
-        print(f"🎉 全工程完了！CSV保存: {filename} ({len(df)}行)")
-    else:
-        print("⚠️ データが取得できませんでした。")
+      - name: Commit & Push
+        run: |
+          git config --global user.name "BoatBot"
+          git config --global user.email "bot@example.com"
+          git add FINAL_BOAT_DATA_2025.csv
+          git commit -m "Add full 2025 dataset" || echo "No changes to commit"
+          git push
