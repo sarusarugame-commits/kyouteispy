@@ -7,8 +7,10 @@ permissions:
   contents: write
 
 jobs:
+  # 1. 分割して並列収集
   collect:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +52,7 @@ jobs:
           name: chunk-${{ matrix.s }}
           path: data/*.csv
 
+  # 2. 全データを結合してコミット
   merge_and_push:
     needs: collect
     runs-on: ubuntu-latest
@@ -75,14 +78,17 @@ jobs:
           import os
           
           files = glob.glob("all_data/*.csv")
-          if files:
-              df_list = [pd.read_csv(f) for f in files]
+          print(f"Found {len(files)} csv files")
+          
+          df_list = [pd.read_csv(f) for f in files]
+          if df_list:
               master_df = pd.concat(df_list, ignore_index=True)
+              # 日付順、会場順、レース順にソート
               master_df = master_df.sort_values(by=['date', 'jcd', 'rno'])
               master_df.to_csv("FINAL_BOAT_DATA_2025.csv", index=False)
               print(f"Merge Complete! Total rows: {len(master_df)}")
           else:
-              print("No CSV files found!")
+              print("No data found to merge.")
 
       - name: Commit & Push
         run: |
