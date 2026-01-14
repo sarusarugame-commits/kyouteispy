@@ -7,6 +7,7 @@ import argparse
 import os
 import re
 import threading
+import unicodedata  # 【追加】全角→半角変換用
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
@@ -23,10 +24,10 @@ def safe_print(msg):
 # ==========================================
 # ⚙️ 設定エリア
 # ==========================================
-MAX_RETRIES = 5       # リトライ回数
-RETRY_INTERVAL = 5    # 通常リトライ時の待機時間
-BAN_WAIT_TIME = 20    # ⛔ BAN/アクセス制限検知時の待機時間
-MAX_WORKERS = 2       # 安全のため「2」推奨（増やしすぎると診断ログでエラーが埋め尽くされます）
+MAX_RETRIES = 3       
+RETRY_INTERVAL = 3    
+BAN_WAIT_TIME = 20    
+MAX_WORKERS = 2       
 
 def get_session():
     session = requests.Session()
@@ -43,14 +44,22 @@ def get_session():
     return session
 
 def clean_text(text):
+    """
+    テキストを正規化してクリーニングする関数
+    - 全角英数字・スペースを半角に変換 (NFKC正規化)
+    - 改行、余分な空白を削除
+    """
     if not text: return ""
-    return text.replace("\n", "").replace("\r", "").replace(" ", "").replace("\u3000", "").strip()
+    # NFKC正規化で「１」→「1」、「　」→「 」に統一
+    text = unicodedata.normalize('NFKC', text)
+    return text.replace("\n", "").replace("\r", "").replace(" ", "").strip()
 
 def get_soup_diagnostic(session, url, check_selector=None):
     """
     HTMLを取得し、内容を診断して返す関数
     Returns: (soup, error_message)
     - 成功時: (soup_object, None)
+    - 開催なし: (None, "SKIP")
     - 失敗時: (None, "エラー詳細メッセージ")
     """
     last_error = ""
@@ -61,26 +70,27 @@ def get_soup_diagnostic(session, url, check_selector=None):
             res.encoding = res.apparent_encoding
             
             if res.status_code == 200:
+                # 非開催ページを即座に判定
+                if "データがありません" in res.text:
+                    return None, "SKIP"
+
                 soup = BeautifulSoup(res.text, 'html.parser')
                 
                 # チェック要素（例：.is-boatColor1）があるか確認
                 if check_selector:
                     if not soup.select_one(check_selector):
-                        # 200 OK だが中身が違う（エラーページ等）
                         page_title = clean_text(soup.title.text) if soup.title else "No Title"
                         body_sample = clean_text(soup.body.text)[:50] if soup.body else "No Body"
                         
                         err_msg = f"⛔ 解析失敗（中身が不正） Title:【{page_title}】 Text: {body_sample}..."
                         
-                        # アクセス制限系なら待機
                         if "アクセス" in page_title or "Error" in page_title:
                             safe_print(f"   🛡️ ブロック検知。{BAN_WAIT_TIME}秒待機します...")
                             time.sleep(BAN_WAIT_TIME * attempt)
                         
                         last_error = err_msg
-                        continue # リトライへ
+                        continue 
                 
-                # 正常
                 return soup, None
             
             else:
@@ -97,26 +107,32 @@ def scrape_race_data(session, jcd, rno, date_str):
     base_url = "https://www.boatrace.jp/owpc/pc/race"
     log_prefix = f"{date_str} J{jcd:02} R{rno:02}"
     
-    # 1. 直前情報（ここに一番重要なデータが多いので最初にチェック）
+    # 1. 直前情報
     soup_before, err = get_soup_diagnostic(
         session, 
         f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}",
-        check_selector=".is-boatColor1" # これがないと話にならない
+        check_selector=".is-boatColor1"
     )
     
+    if err == "SKIP":
+        if rno == 1: 
+            safe_print(f"⏭️  {log_prefix}: 開催なしのためスキップ")
+        return None
+    
     if not soup_before:
-        # 失敗ログ（ここで「なぜダメだったか」が出る）
         safe_print(f"❌ {log_prefix}: 直前情報取得失敗 -> {err}")
         return None
 
     # 2. 番組表
     soup_list, err = get_soup_diagnostic(session, f"{base_url}/racelist?rno={rno}&jcd={jcd:02d}&hd={date_str}")
+    if err == "SKIP": return None
     if not soup_list:
         safe_print(f"❌ {log_prefix}: 番組表取得失敗 -> {err}")
         return None
 
     # 3. 結果
     soup_res, err = get_soup_diagnostic(session, f"{base_url}/raceresult?rno={rno}&jcd={jcd:02d}&hd={date_str}")
+    if err == "SKIP": return None
     if not soup_res:
         safe_print(f"❌ {log_prefix}: 結果取得失敗 -> {err}")
         return None
@@ -133,14 +149,16 @@ def scrape_race_data(session, jcd, rno, date_str):
                 if parent:
                     data_elem = parent.select_one(".weather1_bodyUnitLabelData")
                     if data_elem:
+                        # clean_textで正規化済みなので "m" を消すだけでOK
                         wind = float(clean_text(data_elem.text).replace("m", ""))
         except: pass 
 
-        # 1着フラグ
+        # 1着フラグ（修正箇所：正規化のおかげで "1" と比較可能に）
         res1 = 0
         try:
             res_rows = soup_res.select(".is-p_1-1")
             if res_rows:
+                # td[1] は艇番。clean_textで全角１→半角1になる
                 rank1_boat = clean_text(res_rows[0].select("td")[1].text)
                 if rank1_boat == "1":
                     res1 = 1
@@ -151,14 +169,12 @@ def scrape_race_data(session, jcd, rno, date_str):
         for i in range(1, 7):
             boat_cell = soup_before.select_one(f".is-boatColor{i}")
             if not boat_cell:
-                # 事前チェックを通っているのでここは起きにくいはず
                 safe_print(f"⚠️ {log_prefix}: 構造エラー（{i}号艇が見つかりません）")
                 return None
 
             tbody = boat_cell.find_parent("tbody")
             tds = tbody.select("td")
             
-            # 展示タイム取得（列ズレ対応）
             ex_val = clean_text(tds[4].text)
             if not ex_val: ex_val = clean_text(tds[5].text)
 
@@ -179,8 +195,9 @@ def scrape_race_data(session, jcd, rno, date_str):
                     tbody_list = boat_cell_list.find_parent("tbody")
                     tds_list = tbody_list.select("td")
                     
-                    row[f'wr{i}'] = float(re.findall(r"\d+\.\d+", tds_list[3].text)[0])
-                    nums = re.findall(r"\d+\.\d+", tds_list[6].text)
+                    # 勝率など（正規化されているので数値抽出も安定）
+                    row[f'wr{i}'] = float(re.findall(r"\d+\.\d+", clean_text(tds_list[3].text))[0])
+                    nums = re.findall(r"\d+\.\d+", clean_text(tds_list[6].text))
                     row[f'mo{i}'] = float(nums[0]) if nums else 0.0
                 else:
                     row[f'wr{i}'], row[f'mo{i}'] = 0.0, 0.0
@@ -197,7 +214,6 @@ def scrape_race_data(session, jcd, rno, date_str):
         return None
 
 def process_race_parallel(args):
-    # BAN対策のスリープ
     time.sleep(1.0)
     return scrape_race_data(*args)
 
@@ -214,7 +230,7 @@ if __name__ == "__main__":
     end_d = datetime.strptime(args.end, "%Y-%m-%d")
     current = start_d
 
-    print(f"🚀 本番データ収集（診断ログ付）開始: {args.start} 〜 {args.end}")
+    print(f"🚀 本番データ収集（正規化・診断ログ付）開始: {args.start} 〜 {args.end}")
     
     results = []
     
