@@ -7,7 +7,7 @@ import argparse
 import os
 import re
 import threading
-import unicodedata  # 【追加】全角→半角変換用
+import unicodedata
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
@@ -22,12 +22,12 @@ def safe_print(msg):
         print(msg)
 
 # ==========================================
-# ⚙️ 設定エリア
+# ⚙️ 設定エリア（爆速設定）
 # ==========================================
 MAX_RETRIES = 3       
 RETRY_INTERVAL = 3    
 BAN_WAIT_TIME = 20    
-MAX_WORKERS = 2       
+MAX_WORKERS = 16       # 【高速化】並列数を2→8に増加
 
 def get_session():
     session = requests.Session()
@@ -47,10 +47,9 @@ def clean_text(text):
     """
     テキストを正規化してクリーニングする関数
     - 全角英数字・スペースを半角に変換 (NFKC正規化)
-    - 改行、余分な空白を削除
+    - これにより「１」が「1」になり、勝敗判定が正常動作する
     """
     if not text: return ""
-    # NFKC正規化で「１」→「1」、「　」→「 」に統一
     text = unicodedata.normalize('NFKC', text)
     return text.replace("\n", "").replace("\r", "").replace(" ", "").strip()
 
@@ -214,7 +213,8 @@ def scrape_race_data(session, jcd, rno, date_str):
         return None
 
 def process_race_parallel(args):
-    time.sleep(1.0)
+    # 【高速化】待機時間を短縮 (1.0 -> 0.5)
+    time.sleep(0.5)
     return scrape_race_data(*args)
 
 if __name__ == "__main__":
@@ -230,7 +230,7 @@ if __name__ == "__main__":
     end_d = datetime.strptime(args.end, "%Y-%m-%d")
     current = start_d
 
-    print(f"🚀 本番データ収集（正規化・診断ログ付）開始: {args.start} 〜 {args.end}")
+    print(f"🚀 本番データ収集（高速版・正規化済）開始: {args.start} 〜 {args.end}")
     
     results = []
     
