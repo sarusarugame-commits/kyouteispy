@@ -1,65 +1,60 @@
-name: Boat Race Ultimate Split (36 Matrix)
+name: Full Auto Boat Race 2025
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  # 1. データ収集（20分割：待機ゼロで全機同時発進）
   collect:
-    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 20 # 20台フル稼働
       matrix:
-        # 1年分を「上旬・中旬・下旬」の36個に分割して、確実に6時間以内に終わらせる
         include:
-          # 1月
-          - { name: "Jan-01-10", s: "2025-01-01", e: "2025-01-10" }
-          - { name: "Jan-11-20", s: "2025-01-11", e: "2025-01-20" }
-          - { name: "Jan-21-31", s: "2025-01-21", e: "2025-01-31" }
-          # 2月
-          - { name: "Feb-01-10", s: "2025-02-01", e: "2025-02-10" }
-          - { name: "Feb-11-20", s: "2025-02-11", e: "2025-02-20" }
-          - { name: "Feb-21-28", s: "2025-02-21", e: "2025-02-28" }
-          # 3月
-          - { name: "Mar-01-10", s: "2025-03-01", e: "2025-03-10" }
-          - { name: "Mar-11-20", s: "2025-03-11", e: "2025-03-20" }
-          - { name: "Mar-21-31", s: "2025-03-21", e: "2025-03-31" }
-          # 4月
-          - { name: "Apr-01-10", s: "2025-04-01", e: "2025-04-10" }
-          - { name: "Apr-11-20", s: "2025-04-11", e: "2025-04-20" }
-          - { name: "Apr-21-30", s: "2025-04-21", e: "2025-04-30" }
-          # 5月
-          - { name: "May-01-10", s: "2025-05-01", e: "2025-05-10" }
-          - { name: "May-11-20", s: "2025-05-11", e: "2025-05-20" }
-          - { name: "May-21-31", s: "2025-05-21", e: "2025-05-31" }
-          # 6月
-          - { name: "Jun-01-10", s: "2025-06-01", e: "2025-06-10" }
-          - { name: "Jun-11-20", s: "2025-06-11", e: "2025-06-20" }
-          - { name: "Jun-21-30", s: "2025-06-21", e: "2025-06-30" }
-          # 7月
-          - { name: "Jul-01-10", s: "2025-07-01", e: "2025-07-10" }
-          - { name: "Jul-11-20", s: "2025-07-11", e: "2025-07-20" }
-          - { name: "Jul-21-31", s: "2025-07-21", e: "2025-07-31" }
-          # 8月
-          - { name: "Aug-01-10", s: "2025-08-01", e: "2025-08-10" }
-          - { name: "Aug-11-20", s: "2025-08-11", e: "2025-08-20" }
-          - { name: "Aug-21-31", s: "2025-08-21", e: "2025-08-31" }
-          # 9月
-          - { name: "Sep-01-10", s: "2025-09-01", e: "2025-09-10" }
-          - { name: "Sep-11-20", s: "2025-09-11", e: "2025-09-20" }
-          - { name: "Sep-21-30", s: "2025-09-21", e: "2025-09-30" }
-          # 10月
-          - { name: "Oct-01-10", s: "2025-10-01", e: "2025-10-10" }
-          - { name: "Oct-11-20", s: "2025-10-11", e: "2025-10-20" }
-          - { name: "Oct-21-31", s: "2025-10-21", e: "2025-10-31" }
-          # 11月
-          - { name: "Nov-01-10", s: "2025-11-01", e: "2025-11-10" }
-          - { name: "Nov-11-20", s: "2025-11-11", e: "2025-11-20" }
-          - { name: "Nov-21-30", s: "2025-11-21", e: "2025-11-30" }
-          # 12月
-          - { name: "Dec-01-10", s: "2025-12-01", e: "2025-12-10" }
-          - { name: "Dec-11-20", s: "2025-12-11", e: "2025-12-20" }
-          - { name: "Dec-21-31", s: "2025-12-21", e: "2025-12-31" }
+          # 1. 01/01 - 01/19 (19日間)
+          - { s: "2025-01-01", e: "2025-01-19" }
+          # 2. 01/20 - 02/07 (19日間)
+          - { s: "2025-01-20", e: "2025-02-07" }
+          # 3. 02/08 - 02/26 (19日間)
+          - { s: "2025-02-08", e: "2025-02-26" }
+          # 4. 02/27 - 03/16 (18日間) ※2月は28日まで
+          - { s: "2025-02-27", e: "2025-03-16" }
+          # 5. 03/17 - 04/03 (18日間)
+          - { s: "2025-03-17", e: "2025-04-03" }
+          # 6. 04/04 - 04/21 (18日間)
+          - { s: "2025-04-04", e: "2025-04-21" }
+          # 7. 04/22 - 05/09 (18日間)
+          - { s: "2025-04-22", e: "2025-05-09" }
+          # 8. 05/10 - 05/27 (18日間)
+          - { s: "2025-05-10", e: "2025-05-27" }
+          # 9. 05/28 - 06/14 (18日間)
+          - { s: "2025-05-28", e: "2025-06-14" }
+          # 10. 06/15 - 07/02 (18日間)
+          - { s: "2025-06-15", e: "2025-07-02" }
+          # 11. 07/03 - 07/20 (18日間)
+          - { s: "2025-07-03", e: "2025-07-20" }
+          # 12. 07/21 - 08/07 (18日間)
+          - { s: "2025-07-21", e: "2025-08-07" }
+          # 13. 08/08 - 08/25 (18日間)
+          - { s: "2025-08-08", e: "2025-08-25" }
+          # 14. 08/26 - 09/12 (18日間)
+          - { s: "2025-08-26", e: "2025-09-12" }
+          # 15. 09/13 - 09/30 (18日間)
+          - { s: "2025-09-13", e: "2025-09-30" }
+          # 16. 10/01 - 10/18 (18日間)
+          - { s: "2025-10-01", e: "2025-10-18" }
+          # 17. 10/19 - 11/05 (18日間)
+          - { s: "2025-10-19", e: "2025-11-05" }
+          # 18. 11/06 - 11/23 (18日間)
+          - { s: "2025-11-06", e: "2025-11-23" }
+          # 19. 11/24 - 12/11 (18日間)
+          - { s: "2025-11-24", e: "2025-12-11" }
+          # 20. 12/12 - 12/31 (20日間)
+          - { s: "2025-12-12", e: "2025-12-31" }
 
     steps:
       - uses: actions/checkout@v4
@@ -67,13 +62,60 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install pandas requests beautifulsoup4
-
-      - name: データ収集 (10日分)
-        # 並列数を8のまま、期間を短くして確実にクリアする
-        run: python -u collector.py --start ${{ matrix.s }} --end ${{ matrix.e }}
-
-      - name: 成果物アップロード
+      
+      - name: Scrape
+        run: python collector.py --start ${{ matrix.s }} --end ${{ matrix.e }}
+        
+      - name: Upload Chunk
         uses: actions/upload-artifact@v4
         with:
-          name: data-${{ matrix.name }}
+          name: chunk-${{ matrix.s }}
           path: data/*.csv
+          retention-days: 1
+
+  # 2. 自動結合＆コミット
+  merge_and_push:
+    needs: collect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pandas
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_data
+          pattern: chunk-*
+          merge-multiple: true
+
+      - name: Merge CSVs
+        shell: python
+        run: |
+          import pandas as pd
+          import glob
+          import os
+          
+          files = glob.glob("all_data/*.csv")
+          print(f"Found {len(files)} CSV files.")
+          
+          if files:
+              df_list = [pd.read_csv(f) for f in files]
+              master_df = pd.concat(df_list, ignore_index=True)
+              master_df = master_df.sort_values(by=['date', 'jcd', 'rno'])
+              
+              output_file = "FINAL_BOAT_DATA_2025.csv"
+              master_df.to_csv(output_file, index=False)
+              print(f"Successfully created {output_file} with {len(master_df)} rows.")
+          else:
+              print("No CSV files found. Skipping merge.")
+
+      - name: Commit & Push
+        run: |
+          git config --global user.name "BoatBot"
+          git config --global user.email "bot@example.com"
+          git add FINAL_BOAT_DATA_2025.csv
+          git commit -m "Update full 2025 dataset" || echo "No changes to commit"
+          git push
