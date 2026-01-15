@@ -19,27 +19,22 @@ MAX_RACES = 5
 UA_LIST = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
 ]
 
 def log(msg):
-    """ログを即時出力（flush=True）"""
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def clean_text(text):
     if not text: return ""
     text = unicodedata.normalize('NFKC', str(text))
-    return text.replace("\n", "").replace("\r", "").replace(" ", "").replace("¥", "").replace(",", "").strip()
+    # 余分な空白を削除するが、数字がくっつかないように注意
+    return text.replace("\n", "").replace("\r", "").replace("¥", "").replace(",", "").strip()
 
 def get_soup(url, description="ページ"):
-    """HTML取得（User-Agentランダム化 & タイムアウト延長）"""
-    for i in range(1, 4): # 3回リトライ
+    for i in range(1, 4):
         try:
-            # 毎回UAを変える
             headers = {'User-Agent': random.choice(UA_LIST)}
-            
-            # timeoutを 30秒 に延長
             res = requests.get(url, headers=headers, timeout=30)
             res.encoding = res.apparent_encoding
             
@@ -48,37 +43,24 @@ def get_soup(url, description="ページ"):
                     log(f"     ⚠️ {description}: データなし")
                     return None
                 return BeautifulSoup(res.text, 'html.parser')
-            else:
-                log(f"     ⚠️ {description}: ステータス {res.status_code} (Wait 5s...)")
-                time.sleep(5)
+            time.sleep(3)
         except Exception as e:
-            # エラー内容を短く表示
-            err_msg = str(e)
-            if "read timeout" in err_msg.lower():
-                err_msg = "Read Timeout (応答なし)"
-            log(f"     ❌ {description}: {err_msg} (Wait 5s...)")
-            time.sleep(5)
-            
-    log(f"     💀 {description}: 取得失敗（3回試行）")
+            log(f"     ❌ {description}: {e} (Wait 3s...)")
+            time.sleep(3)
+    log(f"     💀 {description}: 取得失敗")
     return None
 
 def scrape_race(jcd, rno, date_str):
-    """1レース分の詳細データを取得"""
     log(f"🏁 【{jcd}場 {rno}R】 データ収集開始")
     base_url = "https://www.boatrace.jp/owpc/pc/race"
     
-    url_before = f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}"
-    url_res = f"{base_url}/raceresult?rno={rno}&jcd={jcd:02d}&hd={date_str}"
-    url_list = f"{base_url}/racelist?rno={rno}&jcd={jcd:02d}&hd={date_str}"
-    
-    # ページ取得（失敗したらNoneで即終了）
-    soup_before = get_soup(url_before, "直前情報")
+    soup_before = get_soup(f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}", "直前情報")
     if not soup_before: return None
 
-    soup_res = get_soup(url_res, "レース結果")
+    soup_res = get_soup(f"{base_url}/raceresult?rno={rno}&jcd={jcd:02d}&hd={date_str}", "レース結果")
     if not soup_res: return None
 
-    soup_list = get_soup(url_list, "番組表")
+    soup_list = get_soup(f"{base_url}/racelist?rno={rno}&jcd={jcd:02d}&hd={date_str}", "番組表")
     if not soup_list: return None
 
     try:
@@ -88,44 +70,60 @@ def scrape_race(jcd, rno, date_str):
         # --- ① 風速 ---
         try:
             wind_elem = soup_before.select_one(".weather1_bodyUnitLabelData")
-            row['wind'] = float(clean_text(wind_elem.text).replace("m", "")) if wind_elem else 0.0
+            row['wind'] = float(clean_text(wind_elem.text).replace("m", "").replace(" ", "")) if wind_elem else 0.0
         except: row['wind'] = 0.0
 
         # --- ② 着順 (rank1, rank2, rank3) ---
+        # ★修正: 艇番がくっつく問題に対処
         row['rank1'], row['rank2'], row['rank3'] = None, None, None
         try:
+            # 着順テーブルを取得（通常ページ上部）
             rank_rows = soup_res.select("table.is-w495 tbody tr")
             for r in rank_rows:
                 tds = r.select("td")
                 if len(tds) > 1:
-                    rank_idx = clean_text(tds[0].text)
-                    boat_num = clean_text(tds[1].text)
-                    if rank_idx.isdigit() and int(rank_idx) <= 3:
-                        row[f'rank{rank_idx}'] = int(boat_num)
-        except: pass
-        
+                    # 着順
+                    rank_idx = clean_text(tds[0].text).replace(" ", "")
+                    
+                    # 艇番（ここが重要：数字だけを厳密に抽出）
+                    boat_text = clean_text(tds[1].text)
+                    boat_match = re.search(r"^(\d{1})", boat_text) # 先頭の1桁だけを取る
+                    
+                    if rank_idx.isdigit() and int(rank_idx) <= 3 and boat_match:
+                        row[f'rank{rank_idx}'] = int(boat_match.group(1))
+        except Exception as e:
+            log(f"     ⚠️ 着順解析エラー: {e}")
+
         row['res1'] = 1 if row.get('rank1') == 1 else 0
 
         # --- ③ 3連単配当 (payout) ---
+        # ★修正: 検索ロジックを柔軟に
         row['payout'] = 0
         try:
-            # "3連単" を含む th を探す
-            payout_th = soup_res.find(lambda tag: tag.name == "th" and "3連単" in tag.text)
-            if payout_th:
-                # 親の tr を取得し、その中の td を探す（より確実な方法）
-                parent_tr = payout_th.find_parent("tr")
-                tds = parent_tr.select("td")
-                # 通常: [0]=組番, [1]=払戻金, [2]=人気
-                if len(tds) >= 2:
-                    val_text = clean_text(tds[1].text)
-                    if val_text.isdigit():
-                        row['payout'] = int(val_text)
-                    else:
-                        log(f"     ⚠️ 配当解析失敗: '{val_text}'")
-                else:
-                    log("     ⚠️ 配当の列(td)が見つかりません")
-            else:
-                log("     ⚠️ '3連単'のヘッダーが見つかりません")
+            # ページ内の全テーブルを走査して「3連単」を探す
+            found_payout = False
+            tables = soup_res.select("table")
+            for tbl in tables:
+                if "3連単" in tbl.text:
+                    # このテーブルの中に配当があるはず
+                    rows = tbl.select("tr")
+                    for tr in rows:
+                        # ヘッダー(th)かセル(td)に "3連単" がある行を探す
+                        if "3連単" in tr.text:
+                            tds = tr.select("td")
+                            # [組番, 払戻金, 人気] の並びが多いが、場合によるので金額っぽいものを探す
+                            for td in tds:
+                                txt = clean_text(td.text)
+                                # 数字のみ（金額）で、組番（1-2-3など）ではないものを探す
+                                if txt.isdigit() and len(txt) > 1 and "-" not in txt:
+                                    row['payout'] = int(txt)
+                                    found_payout = True
+                                    break
+                        if found_payout: break
+                if found_payout: break
+            
+            if not found_payout:
+                 log("     ⚠️ 配当が見つかりませんでした")
         except Exception as e:
             log(f"     ⚠️ 配当取得エラー: {e}")
 
@@ -136,7 +134,7 @@ def scrape_race(jcd, rno, date_str):
                 boat_cell = soup_before.select_one(f".is-boatColor{i}")
                 if boat_cell:
                     tds = boat_cell.find_parent("tbody").select("td")
-                    ex_val = clean_text(tds[4].text)
+                    ex_val = clean_text(tds[4].text).replace(" ", "")
                     row[f'ex{i}'] = float(ex_val) if ex_val and ex_val != "." else 0.0
                 else: row[f'ex{i}'] = 0.0
 
@@ -150,9 +148,11 @@ def scrape_race(jcd, rno, date_str):
                 f_match = re.search(r"F(\d+)", clean_text(tds[2].text))
                 row[f'f{i}'] = int(f_match.group(1)) if f_match else 0
                 
-                st_match = re.search(r"ST(\d\.\d{2})", list_tbody.text.replace("\n", ""))
+                # 平均ST
+                st_match = re.search(r"ST(\d\.\d{2})", list_tbody.text.replace("\n", "").replace(" ", ""))
                 row[f'st{i}'] = float(st_match.group(1)) if st_match else 0.17
                 
+                # モーター
                 mo_text = clean_text(tds[5].text)
                 mo_match = re.search(r"(\d{1,3}\.\d)", mo_text)
                 if not mo_match:
@@ -163,7 +163,6 @@ def scrape_race(jcd, rno, date_str):
             except:
                 row[f'wr{i}'], row[f'f{i}'], row[f'st{i}'], row[f'mo{i}'] = 0.0, 0, 0.20, 0.0
 
-        # 成功ログ
         log(f"  ✅ 取得成功 (1着:{row.get('rank1')} / 配当:¥{row.get('payout')})")
         return row
 
@@ -183,7 +182,6 @@ if __name__ == "__main__":
     
     collected_data = []
     
-    # 24場×12Rを巡回
     for jcd in range(1, 25):
         if len(collected_data) >= MAX_RACES: break
         
@@ -193,10 +191,8 @@ if __name__ == "__main__":
             data = scrape_race(jcd, rno, target_date)
             if data:
                 collected_data.append(data)
-                # 連続アクセスを防ぐため少し長めに待つ
                 time.sleep(3) 
             
-    # CSV保存
     if collected_data:
         log("==================================================")
         os.makedirs("data", exist_ok=True)
