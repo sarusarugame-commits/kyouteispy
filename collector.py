@@ -43,21 +43,24 @@ def get_soup(url, description="ページ"):
     return None
 
 def extract_payout(soup, key_text):
-    """指定した賭け式（単勝、2連単など）の配当を抽出する"""
+    """【修正版】テーブル全体を走査して配当を探す強力なロジック"""
     try:
-        # その文字を含む行を探す
-        target_th = soup.find(lambda tag: tag.name == "th" and key_text in tag.text)
-        if target_th:
-            # thの親trを取得 -> その中のtdを探す
-            parent_tr = target_th.find_parent("tr")
-            tds = parent_tr.select("td")
-            
-            # 配当金っぽい数字を探す（組番の次にあることが多い）
-            for td in tds:
-                txt = clean_text(td.text)
-                # 数字のみで、かつ "-" を含まない（組番ではない）ものを配当とみなす
-                if txt.isdigit() and len(txt) > 1 and "-" not in txt:
-                    return int(txt)
+        # ページ内の全テーブルを取得
+        tables = soup.select("table")
+        for tbl in tables:
+            # そのテーブルに「単勝」「2連単」などの文字が含まれているか
+            if key_text in tbl.text:
+                rows = tbl.select("tr")
+                for tr in rows:
+                    # その行にキーテキストが含まれているか
+                    if key_text in tr.text:
+                        tds = tr.select("td")
+                        for td in tds:
+                            txt = clean_text(td.text)
+                            # 「数字のみ」かつ「100円以上（2桁以上）」かつ「-を含まない（組番じゃない）」
+                            # ※特払い(70円)などの可能性もあるので len(txt) >= 2 とする
+                            if txt.isdigit() and len(txt) >= 2 and "-" not in txt:
+                                return int(txt)
     except: pass
     return 0
 
@@ -98,14 +101,12 @@ def scrape_race(jcd, rno, date_str):
         except: pass
         row['res1'] = 1 if row.get('rank1') == 1 else 0
 
-        # --- ③ 配当（ここを強化しました） ---
-        # 必要な賭け式を全部取る
+        # --- ③ 配当（修正済みロジック使用） ---
         row['tansho'] = extract_payout(soup_res, "単勝")
         row['nirentan'] = extract_payout(soup_res, "2連単")
         row['sanrentan'] = extract_payout(soup_res, "3連単")
         row['sanrenpuku'] = extract_payout(soup_res, "3連複")
         
-        # 互換性のため payout = 3連単 にしておく
         row['payout'] = row['sanrentan']
 
         # --- ④ 各艇データ ---
@@ -172,7 +173,7 @@ if __name__ == "__main__":
         os.makedirs("data", exist_ok=True)
         df = pd.DataFrame(collected_data)
         
-        # カラム順序整理（配当系を前に）
+        # カラム順序整理
         cols = ['date', 'jcd', 'rno', 'wind', 'res1', 'rank1', 'rank2', 'rank3', 
                 'tansho', 'nirentan', 'sanrentan', 'sanrenpuku', 'payout']
         for i in range(1, 7):
