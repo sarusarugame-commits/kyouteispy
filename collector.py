@@ -7,6 +7,7 @@ import os
 import unicodedata
 import sys
 import argparse
+import random
 
 # ==========================================
 # ⚙️ 設定エリア
@@ -14,8 +15,16 @@ import argparse
 DEFAULT_TARGET_DATE = "20250101" 
 MAX_RACES = 5 
 
+# 偽装用User-Agentリスト
+UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+]
+
 def log(msg):
-    """ログを即時出力するための関数（flush=True必須）"""
+    """ログを即時出力（flush=True）"""
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def clean_text(text):
@@ -24,15 +33,14 @@ def clean_text(text):
     return text.replace("\n", "").replace("\r", "").replace(" ", "").replace("¥", "").replace(",", "").strip()
 
 def get_soup(url, description="ページ"):
-    """HTML取得（詳細ログ付き）"""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    
+    """HTML取得（User-Agentランダム化 & タイムアウト延長）"""
     for i in range(1, 4): # 3回リトライ
         try:
-            # log(f"  -> {description} にアクセス中 (試行{i}/3)...")
-            res = requests.get(url, headers=headers, timeout=10)
+            # 毎回UAを変える
+            headers = {'User-Agent': random.choice(UA_LIST)}
+            
+            # timeoutを 30秒 に延長
+            res = requests.get(url, headers=headers, timeout=30)
             res.encoding = res.apparent_encoding
             
             if res.status_code == 200:
@@ -41,13 +49,17 @@ def get_soup(url, description="ページ"):
                     return None
                 return BeautifulSoup(res.text, 'html.parser')
             else:
-                log(f"     ⚠️ {description}: ステータスコード異常 {res.status_code}")
-                time.sleep(1)
+                log(f"     ⚠️ {description}: ステータス {res.status_code} (Wait 5s...)")
+                time.sleep(5)
         except Exception as e:
-            log(f"     ❌ {description}: エラー {e} (リトライします)")
-            time.sleep(1)
+            # エラー内容を短く表示
+            err_msg = str(e)
+            if "read timeout" in err_msg.lower():
+                err_msg = "Read Timeout (応答なし)"
+            log(f"     ❌ {description}: {err_msg} (Wait 5s...)")
+            time.sleep(5)
             
-    log(f"     💀 {description}: 取得失敗（ギブアップ）")
+    log(f"     💀 {description}: 取得失敗（3回試行）")
     return None
 
 def scrape_race(jcd, rno, date_str):
@@ -55,12 +67,11 @@ def scrape_race(jcd, rno, date_str):
     log(f"🏁 【{jcd}場 {rno}R】 データ収集開始")
     base_url = "https://www.boatrace.jp/owpc/pc/race"
     
-    # URL生成
     url_before = f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}"
     url_res = f"{base_url}/raceresult?rno={rno}&jcd={jcd:02d}&hd={date_str}"
     url_list = f"{base_url}/racelist?rno={rno}&jcd={jcd:02d}&hd={date_str}"
     
-    # ページ取得（一つずつ確認）
+    # ページ取得（失敗したらNoneで即終了）
     soup_before = get_soup(url_before, "直前情報")
     if not soup_before: return None
 
@@ -98,14 +109,25 @@ def scrape_race(jcd, rno, date_str):
         # --- ③ 3連単配当 (payout) ---
         row['payout'] = 0
         try:
+            # "3連単" を含む th を探す
             payout_th = soup_res.find(lambda tag: tag.name == "th" and "3連単" in tag.text)
             if payout_th:
-                payout_td = payout_th.find_next_sibling("td").find_next_sibling("td")
-                if payout_td:
-                    val = clean_text(payout_td.text)
-                    if val.isdigit():
-                        row['payout'] = int(val)
-        except: pass
+                # 親の tr を取得し、その中の td を探す（より確実な方法）
+                parent_tr = payout_th.find_parent("tr")
+                tds = parent_tr.select("td")
+                # 通常: [0]=組番, [1]=払戻金, [2]=人気
+                if len(tds) >= 2:
+                    val_text = clean_text(tds[1].text)
+                    if val_text.isdigit():
+                        row['payout'] = int(val_text)
+                    else:
+                        log(f"     ⚠️ 配当解析失敗: '{val_text}'")
+                else:
+                    log("     ⚠️ 配当の列(td)が見つかりません")
+            else:
+                log("     ⚠️ '3連単'のヘッダーが見つかりません")
+        except Exception as e:
+            log(f"     ⚠️ 配当取得エラー: {e}")
 
         # --- ④ 各艇データ ---
         for i in range(1, 7):
@@ -141,6 +163,7 @@ def scrape_race(jcd, rno, date_str):
             except:
                 row[f'wr{i}'], row[f'f{i}'], row[f'st{i}'], row[f'mo{i}'] = 0.0, 0, 0.20, 0.0
 
+        # 成功ログ
         log(f"  ✅ 取得成功 (1着:{row.get('rank1')} / 配当:¥{row.get('payout')})")
         return row
 
@@ -170,7 +193,8 @@ if __name__ == "__main__":
             data = scrape_race(jcd, rno, target_date)
             if data:
                 collected_data.append(data)
-                time.sleep(1) # 負荷軽減
+                # 連続アクセスを防ぐため少し長めに待つ
+                time.sleep(3) 
             
     # CSV保存
     if collected_data:
