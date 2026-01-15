@@ -1,7 +1,7 @@
-name: Debug Collector
+name: Debug 5 Races
 
 on:
-  workflow_dispatch: # 手動実行用
+  workflow_dispatch: # 手動実行ボタン
 
 jobs:
   debug-run:
@@ -13,16 +13,20 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install libraries
         run: pip install pandas requests beautifulsoup4
 
-      - name: collector.py
+      - name: Run Collector (5 Races Limit)
+        # さっき保存した collector.py を実行（引数なしでデフォルト設定で動きます）
         run: python collector.py
 
-      - name: Upload Result
+      - name: Check File Exists
+        run: ls -R data/
+
+      - name: Upload Result CSV
         uses: actions/upload-artifact@v4
         with:
-          name: debug-csv
-          path: debug_result.csv
+          name: debug-result
+          path: data/*.csv
