@@ -1,32 +1,107 @@
-name: Debug 5 Races
+name: 20x Parallel Full Collection
 
 on:
-  workflow_dispatch: # 手動実行ボタン
+  workflow_dispatch: # 手動実行
+
+permissions:
+  contents: write
 
 jobs:
-  debug-run:
+  # 20台のマシンで分散収集
+  collect:
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    timeout-minutes: 360 # 6時間
+    strategy:
+      fail-fast: false
+      max-parallel: 20 # 20台同時実行
+      matrix:
+        include:
+          # 2025年を約18日ずつ20分割
+          - { s: "2025-01-01", e: "2025-01-18" }
+          - { s: "2025-01-19", e: "2025-02-05" }
+          - { s: "2025-02-06", e: "2025-02-24" }
+          - { s: "2025-02-25", e: "2025-03-14" }
+          - { s: "2025-03-15", e: "2025-04-01" }
+          - { s: "2025-04-02", e: "2025-04-20" }
+          - { s: "2025-04-21", e: "2025-05-08" }
+          - { s: "2025-05-09", e: "2025-05-27" }
+          - { s: "2025-05-28", e: "2025-06-14" }
+          - { s: "2025-06-15", e: "2025-07-02" }
+          - { s: "2025-07-03", e: "2025-07-21" }
+          - { s: "2025-07-22", e: "2025-08-09" }
+          - { s: "2025-08-10", e: "2025-08-27" }
+          - { s: "2025-08-28", e: "2025-09-14" }
+          - { s: "2025-09-15", e: "2025-10-02" }
+          - { s: "2025-10-03", e: "2025-10-21" }
+          - { s: "2025-10-22", e: "2025-11-08" }
+          - { s: "2025-11-09", e: "2025-11-26" }
+          - { s: "2025-11-27", e: "2025-12-14" }
+          - { s: "2025-12-15", e: "2025-12-31" }
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          
+      - run: pip install pandas requests beautifulsoup4
 
-      - name: Install libraries
-        run: pip install pandas requests beautifulsoup4
+      # 並列数16で実行
+      - name: Run Collector
+        run: python collector.py --start ${{ matrix.s }} --end ${{ matrix.e }}
 
-      - name: Run Collector (5 Races Limit)
-        # さっき保存した collector.py を実行（引数なしでデフォルト設定で動きます）
-        run: python collector.py
-
-      - name: Check File Exists
-        run: ls -R data/
-
-      - name: Upload Result CSV
-        uses: actions/upload-artifact@v4
+      # 終わったらCSVを一時アップロード
+      - uses: actions/upload-artifact@v4
         with:
-          name: debug-result
+          name: chunk-${{ matrix.s }}
           path: data/*.csv
+          retention-days: 1
+
+  # 全部分終わったら結合してコミット
+  merge:
+    needs: collect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install pandas
+
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all_data
+          pattern: chunk-*
+          merge-multiple: true
+
+      - name: Merge and Save
+        shell: python
+        run: |
+          import pandas as pd
+          import glob
+          
+          files = glob.glob("all_data/*.csv")
+          if not files:
+            print("No data found!")
+            exit(1)
+            
+          print(f"Merging {len(files)} files...")
+          df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+          
+          # 日付・場・レースでソート
+          df['date'] = df['date'].astype(int)
+          df = df.sort_values(['date', 'jcd', 'rno'])
+          
+          filename = "FINAL_FULL_DATA_2025.csv"
+          df.to_csv(filename, index=False)
+          print(f"Saved {filename} with {len(df)} rows.")
+
+      - name: Push to Git
+        run: |
+          git config --global user.name "BoatBot"
+          git config --global user.email "bot@example.com"
+          git add FINAL_FULL_DATA_2025.csv
+          git commit -m "Add FULL 2025 DATA set" || echo "No changes"
+          git push
