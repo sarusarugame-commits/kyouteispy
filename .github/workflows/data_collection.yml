@@ -1,99 +1,28 @@
-name: Full Auto Boat Race 2025
+name: Debug Collector
 
 on:
-  workflow_dispatch:
-
-permissions:
-  contents: write
+  workflow_dispatch: # 手動実行用
 
 jobs:
-  # 1. 分割して並列収集
-  collect:
+  debug-run:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { s: "2025-01-01", e: "2025-01-19" }
-          - { s: "2025-01-20", e: "2025-02-07" }
-          - { s: "2025-02-08", e: "2025-02-26" }
-          - { s: "2025-02-27", e: "2025-03-17" }
-          - { s: "2025-03-18", e: "2025-04-05" }
-          - { s: "2025-04-06", e: "2025-04-24" }
-          - { s: "2025-04-25", e: "2025-05-13" }
-          - { s: "2025-05-14", e: "2025-06-01" }
-          - { s: "2025-06-02", e: "2025-06-20" }
-          - { s: "2025-06-21", e: "2025-07-09" }
-          - { s: "2025-07-10", e: "2025-07-28" }
-          - { s: "2025-07-29", e: "2025-08-16" }
-          - { s: "2025-08-17", e: "2025-09-04" }
-          - { s: "2025-09-05", e: "2025-09-23" }
-          - { s: "2025-09-24", e: "2025-10-12" }
-          - { s: "2025-10-13", e: "2025-10-31" }
-          - { s: "2025-11-01", e: "2025-11-19" }
-          - { s: "2025-11-20", e: "2025-12-08" }
-          - { s: "2025-12-09", e: "2025-12-20" }
-          - { s: "2025-12-21", e: "2025-12-31" }
-
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: pip install pandas requests beautifulsoup4
-      
-      - name: Scrape
-        run: python collector.py --start ${{ matrix.s }} --end ${{ matrix.e }}
-        
-      - name: Upload Chunk
+          python-version: '3.10'
+
+      - name: Install libraries
+        run: pip install pandas requests beautifulsoup4
+
+      - name: Run Debug Collector
+        run: python debug_collector.py
+
+      - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
-          name: chunk-${{ matrix.s }}
-          path: data/*.csv
-
-  # 2. 全データを結合してコミット
-  merge_and_push:
-    needs: collect
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - run: pip install pandas
-
-      - name: Download All Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all_data
-          pattern: chunk-*
-          merge-multiple: true
-
-      - name: Merge CSVs
-        shell: python
-        run: |
-          import pandas as pd
-          import glob
-          import os
-          
-          files = glob.glob("all_data/*.csv")
-          print(f"Found {len(files)} csv files")
-          
-          df_list = [pd.read_csv(f) for f in files]
-          if df_list:
-              master_df = pd.concat(df_list, ignore_index=True)
-              # 日付順、会場順、レース順にソート
-              master_df = master_df.sort_values(by=['date', 'jcd', 'rno'])
-              master_df.to_csv("FINAL_BOAT_DATA_2025.csv", index=False)
-              print(f"Merge Complete! Total rows: {len(master_df)}")
-          else:
-              print("No data found to merge.")
-
-      - name: Commit & Push
-        run: |
-          git config --global user.name "BoatBot"
-          git config --global user.email "bot@example.com"
-          git add FINAL_BOAT_DATA_2025.csv
-          git commit -m "Add full 2025 dataset" || echo "No changes to commit"
-          git push
+          name: debug-csv
+          path: debug_result.csv
