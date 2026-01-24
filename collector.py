@@ -83,7 +83,7 @@ def extract_payout(soup, key_text):
 def scrape_race_data(session, jcd, rno, date_str):
     base_url = "https://www.boatrace.jp/owpc/pc/race"
     
-    # 3ページ並列取得はサーバー負荷が高すぎるため、1つずつ確実に取る
+    # 3ページ取得（サーバー負荷を考慮しつつ確実に）
     soup_before, err = get_soup(session, f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}", "直前")
     if err == "SKIP" or not soup_before: return None
 
@@ -117,45 +117,80 @@ def scrape_race_data(session, jcd, rno, date_str):
         except: pass
         row['res1'] = 1 if row.get('rank1') == 1 else 0
 
-        # --- ③ 配当（全種類） ---
+        # --- ③ 配当（3連単をpayoutとして使用） ---
         row['tansho'] = extract_payout(soup_res, "単勝")
         row['nirentan'] = extract_payout(soup_res, "2連単")
         row['sanrentan'] = extract_payout(soup_res, "3連単")
         row['sanrenpuku'] = extract_payout(soup_res, "3連複")
-        row['payout'] = row['sanrentan'] # 互換用
+        row['payout'] = row['sanrentan'] 
 
         # --- ④ 各艇データ ---
         for i in range(1, 7):
+            # -------------------------------------------------------
+            # [A] 直前情報 (beforeinfo) から取得: 展示タイム, モーター勝率
+            # -------------------------------------------------------
             try:
-                # 展示
                 boat_cell = soup_before.select_one(f".is-boatColor{i}")
                 if boat_cell:
-                    tds = boat_cell.find_parent("tbody").select("td")
-                    ex_val = clean_text(tds[4].text).replace(" ", "")
+                    tbody = boat_cell.find_parent("tbody")
+                    tds = tbody.select("td")
+                    
+                    # 展示タイム (通常は右端の方にある)
+                    # tdの中身を走査して "6.xx" のような形式を探す方が安全だが、配置固定と仮定
+                    ex_val = clean_text(tds[-1].text).replace(" ", "") # 一番右
+                    if not re.match(r"\d\.\d{2}", ex_val):
+                         ex_val = clean_text(tds[4].text).replace(" ", "") # 念のためインデックス指定も試行
                     row[f'ex{i}'] = float(ex_val) if ex_val and ex_val != "." else 0.0
-                else: row[f'ex{i}'] = 0.0
 
-                # 詳細
-                list_tbody = soup_list.select_one(f".is-boatColor{i}").find_parent("tbody")
-                tds = list_tbody.select("td")
-                
-                wr_match = re.search(r"(\d\.\d{2})", clean_text(tds[3].text))
-                row[f'wr{i}'] = float(wr_match.group(1)) if wr_match else 0.0
-                
-                f_match = re.search(r"F(\d+)", clean_text(tds[2].text))
-                row[f'f{i}'] = int(f_match.group(1)) if f_match else 0
-                
-                st_match = re.search(r"ST(\d\.\d{2})", list_tbody.text.replace("\n", "").replace(" ", ""))
-                row[f'st{i}'] = float(st_match.group(1)) if st_match else 0.17
-                
-                mo_text = clean_text(tds[5].text)
-                mo_match = re.search(r"(\d{1,3}\.\d)", mo_text)
-                if not mo_match:
-                    mo_text = clean_text(tds[6].text)
-                    mo_match = re.search(r"(\d{1,3}\.\d)", mo_text)
-                row[f'mo{i}'] = float(mo_match.group(1)) if mo_match else 0.0
+                    # モーター勝率 (2連率)
+                    # "No.xx xx.x%" という形式のセルを探す
+                    row[f'mo{i}'] = 0.0
+                    for td in tds:
+                        txt = clean_text(td.text)
+                        # "%" が含まれていて数字がある場合
+                        if "%" in txt:
+                            mo_match = re.search(r"(\d{1,2}\.\d)", txt)
+                            if mo_match:
+                                row[f'mo{i}'] = float(mo_match.group(1))
+                                break
+                else:
+                    row[f'ex{i}'] = 0.0
+                    row[f'mo{i}'] = 0.0
             except:
-                row[f'wr{i}'], row[f'f{i}'], row[f'st{i}'], row[f'mo{i}'] = 0.0, 0, 0.20, 0.0
+                row[f'ex{i}'] = 0.0
+                row[f'mo{i}'] = 0.0
+
+            # -------------------------------------------------------
+            # [B] 番組表 (racelist) から取得: 選手勝率, F数, ST
+            # -------------------------------------------------------
+            try:
+                list_node = soup_list.select_one(f".is-boatColor{i}")
+                if list_node:
+                    list_tbody = list_node.find_parent("tbody")
+                    row_text = clean_text(list_tbody.text)
+                    tds = list_tbody.select("td")
+                    
+                    # 全国勝率 (x.xx という形式を探す)
+                    # 通常 tds[3] あたりだが、行全体から正規表現で探す
+                    wr_match = re.search(r"(\d\.\d{2})", clean_text(tds[3].text))
+                    row[f'wr{i}'] = float(wr_match.group(1)) if wr_match else 0.0
+                    
+                    # フライング(F)
+                    # 行全体から "F1", "F2" などを探す
+                    f_match = re.search(r"F(\d+)", row_text)
+                    row[f'f{i}'] = int(f_match.group(1)) if f_match else 0
+                    
+                    # 平均ST
+                    # 行全体から "ST0.15" のような形式を探す
+                    st_match = re.search(r"ST(\d\.\d{2})", row_text.replace(" ", ""))
+                    row[f'st{i}'] = float(st_match.group(1)) if st_match else 0.17
+                else:
+                    raise Exception("No Data")
+                
+            except:
+                row[f'wr{i}'] = 0.0
+                row[f'f{i}'] = 0
+                row[f'st{i}'] = 0.17
         
         return row
     except: return None
@@ -182,10 +217,12 @@ if __name__ == "__main__":
     
     safe_print(f"🚀 収集開始: {args.start} 〜 {args.end} (並列数: {MAX_WORKERS})")
     
-    # 逐次保存設定
-    filename = f"data/data_{args.start.replace('-','')}.csv"
+    # 保存ディレクトリ
     os.makedirs("data", exist_ok=True)
-    file_exists = False
+    
+    # ファイル名を決定
+    filename = f"data/data_{args.start.replace('-','')}_{args.end.replace('-','')}.csv"
+    file_exists = os.path.exists(filename)
 
     while current <= end_d:
         d_str = current.strftime("%Y%m%d")
@@ -211,13 +248,15 @@ if __name__ == "__main__":
             for i in range(1, 7):
                 cols.extend([f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
             
+            # 存在するカラムのみで構成
             use_cols = [c for c in cols if c in df.columns]
             df = df[use_cols]
             
+            # 追記モードで保存
             df.to_csv(filename, mode='a', index=False, header=not file_exists)
             file_exists = True
             safe_print(f"  ✅ {len(df)}レース 保存完了")
         
         current += timedelta(days=1)
     
-    safe_print("🎉 担当分完了")
+    safe_print(f"🎉 完了！データは {filename} に保存されました")
