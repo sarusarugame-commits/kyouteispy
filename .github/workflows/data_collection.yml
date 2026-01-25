@@ -14,18 +14,18 @@ on:
 
 permissions:
   contents: write
-  actions: write # ループ処理（次の年を起動）するために必要
+  actions: write
 
 jobs:
   # ========================================================
-  # 1. あなたの指定した「20分割」スケジュールで並列収集
+  # 1. 指定された20分割スケジュールで並列収集
   # ========================================================
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360 # 6時間
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 20 # 20台同時実行
       matrix:
         include:
           # 年の部分を除いた「月-日」の定義（全20分割）
@@ -56,7 +56,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
+          # cache: 'pip' を削除しました（これがエラー原因）
           
       - run: pip install pandas requests beautifulsoup4
 
@@ -81,7 +81,7 @@ jobs:
   # ========================================================
   # 2. 結合・保存・そして次の年へリレー
   # ========================================================
-  merge-and-next:
+  merge:
     needs: collect
     runs-on: ubuntu-latest
     steps:
@@ -89,6 +89,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          # ここも cache 削除
       - run: pip install pandas
 
       - name: Download All Artifacts
@@ -98,35 +99,39 @@ jobs:
           pattern: chunk-*
           merge-multiple: true
 
-      - name: Merge CSVs
+      - name: Merge and Save
+        shell: python
         run: |
-          python -c "
           import pandas as pd
           import glob
           import os
           
-          files = glob.glob('all_data/*.csv')
+          files = glob.glob("all_data/*.csv")
           if not files:
-              print('⚠️ データなし')
-              exit(0)
-              
-          print(f'📦 {len(files)}ファイルを結合中...')
+            print("No data found!")
+            exit(1)
+            
+          print(f"Merging {len(files)} files...")
           df_list = []
           for f in files:
               try:
                   tmp = pd.read_csv(f)
                   if not tmp.empty: df_list.append(tmp)
               except: pass
-          
+
           if df_list:
               df = pd.concat(df_list, ignore_index=True)
+              
+              # 型変換とソート
               df['date'] = df['date'].astype(int)
               df = df.sort_values(['date', 'jcd', 'rno'])
               
-              filename = 'FINAL_FULL_DATA_${{ inputs.target_year }}.csv'
+              # 年ごとのファイル名で保存
+              filename = f"FINAL_FULL_DATA_${{ inputs.target_year }}.csv"
               df.to_csv(filename, index=False)
-              print(f'✅ 保存完了: {filename} ({len(df)}行)')
-          "
+              print(f"Saved {filename} with {len(df)} rows.")
+          else:
+              print("Dataframe empty.")
 
       - name: Push to Git
         run: |
@@ -137,7 +142,7 @@ jobs:
           git commit -m "Add Data ${{ inputs.target_year }}" || echo "No changes"
           git push origin main
 
-      # 🔥 自動ループ機能 🔥
+      # 🔥 自動ループ機能 (次の年があれば再起動) 🔥
       - name: Trigger Next Year
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -148,7 +153,7 @@ jobs:
 
           if [ "$NEXT" -le "$END" ]; then
             echo "🔄 $CURRENT年完了！次は $NEXT年 を20並列で開始します..."
-            gh workflow run 20_parallel_loop.yml -f target_year=$NEXT -f end_year=$END
+            gh workflow run 20_parallel_auto.yml -f target_year=$NEXT -f end_year=$END
           else
             echo "🎉 全指定期間 ($END年まで) の収集が完了しました！"
           fi
