@@ -18,17 +18,16 @@ permissions:
 
 jobs:
   # ========================================================
-  # 1. 指定された20分割スケジュールで並列収集
+  # 1. 20並列収集 (ここでの通知はなし)
   # ========================================================
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6時間
+    timeout-minutes: 360
     strategy:
       fail-fast: false
-      max-parallel: 20 # 20台同時実行
+      max-parallel: 20
       matrix:
         include:
-          # 年の部分を除いた「月-日」の定義（全20分割）
           - { s: "01-01", e: "01-18" }
           - { s: "01-19", e: "02-05" }
           - { s: "02-06", e: "02-24" }
@@ -56,20 +55,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          # cache: 'pip' を削除しました（これがエラー原因）
+          # cache: 'pip' を削除 (これがエラー原因だった)
           
       - run: pip install pandas requests beautifulsoup4
 
-      # 入力された年(target_year)とマトリックスの日付を組み合わせて実行
       - name: Run Collector (${{ inputs.target_year }}-${{ matrix.s }} ~ ${{ matrix.e }})
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           YEAR="${{ inputs.target_year }}"
           START="$YEAR-${{ matrix.s }}"
           END="$YEAR-${{ matrix.e }}"
-          
           echo "🚀 Running: $START to $END"
+          # Discord通知の環境変数は削除(Python側で送らないため)
           python collector.py --start $START --end $END
 
       - uses: actions/upload-artifact@v4
@@ -79,7 +75,7 @@ jobs:
           retention-days: 1
 
   # ========================================================
-  # 2. 結合・保存・そして次の年へリレー
+  # 2. 結合・保存・通知・再起動
   # ========================================================
   merge:
     needs: collect
@@ -89,8 +85,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          # ここも cache 削除
-      - run: pip install pandas
+      - run: pip install pandas requests
 
       - name: Download All Artifacts
         uses: actions/download-artifact@v4
@@ -100,38 +95,35 @@ jobs:
           merge-multiple: true
 
       - name: Merge and Save
-        shell: python
+        id: merge_step
         run: |
+          python -c "
           import pandas as pd
           import glob
           import os
           
-          files = glob.glob("all_data/*.csv")
+          files = glob.glob('all_data/*.csv')
           if not files:
-            print("No data found!")
-            exit(1)
-            
-          print(f"Merging {len(files)} files...")
+              print('No data found!')
+              exit(0)
+              
+          print(f'Merging {len(files)} files...')
           df_list = []
           for f in files:
               try:
                   tmp = pd.read_csv(f)
                   if not tmp.empty: df_list.append(tmp)
               except: pass
-
+          
           if df_list:
               df = pd.concat(df_list, ignore_index=True)
-              
-              # 型変換とソート
               df['date'] = df['date'].astype(int)
               df = df.sort_values(['date', 'jcd', 'rno'])
               
-              # 年ごとのファイル名で保存
-              filename = f"FINAL_FULL_DATA_${{ inputs.target_year }}.csv"
+              filename = 'FINAL_FULL_DATA_${{ inputs.target_year }}.csv'
               df.to_csv(filename, index=False)
-              print(f"Saved {filename} with {len(df)} rows.")
-          else:
-              print("Dataframe empty.")
+              print(f'Saved {filename} with {len(df)} rows.')
+          "
 
       - name: Push to Git
         run: |
@@ -142,7 +134,20 @@ jobs:
           git commit -m "Add Data ${{ inputs.target_year }}" || echo "No changes"
           git push origin main
 
-      # 🔥 自動ループ機能 (次の年があれば再起動) 🔥
+      # 🔥 ここで通知 (1年分終わったタイミング) 🔥
+      - name: Notify Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TARGET_YEAR: ${{ inputs.target_year }}
+        run: |
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            curl -H "Content-Type: application/json" \
+                 -X POST \
+                 -d "{\"content\": \"✅ **${TARGET_YEAR}年の収集・結合が完了しました！**\n次の年の処理があれば開始します。\"}" \
+                 $DISCORD_WEBHOOK_URL
+          fi
+
+      # 🔥 自動ループ機能 (次の年へ) 🔥
       - name: Trigger Next Year
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -152,8 +157,15 @@ jobs:
           NEXT=$((CURRENT + 1))
 
           if [ "$NEXT" -le "$END" ]; then
-            echo "🔄 $CURRENT年完了！次は $NEXT年 を20並列で開始します..."
+            echo "🔄 $CURRENT年完了！次は $NEXT年 を開始します..."
             gh workflow run 20_parallel_auto.yml -f target_year=$NEXT -f end_year=$END
           else
             echo "🎉 全指定期間 ($END年まで) の収集が完了しました！"
+            # 全て終わった時の通知
+            if [ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
+               curl -H "Content-Type: application/json" \
+                 -X POST \
+                 -d "{\"content\": \"🎉 **全スケジュールのデータ収集が完全に終了しました！**\"}" \
+                 ${{ secrets.DISCORD_WEBHOOK_URL }}
+            fi
           fi
