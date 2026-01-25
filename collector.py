@@ -8,7 +8,6 @@ import unicodedata
 import argparse
 import random
 import threading
-import gc
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from requests.adapters import HTTPAdapter
@@ -31,14 +30,6 @@ print_lock = threading.Lock()
 def safe_print(msg):
     with print_lock:
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
-
-def send_discord(content):
-    url = os.environ.get("DISCORD_WEBHOOK_URL")
-    if not url: return
-    try:
-        time.sleep(1)
-        requests.post(url, json={"content": content}, timeout=10)
-    except: pass
 
 def clean_text(text):
     if not text: return ""
@@ -101,15 +92,19 @@ def scrape_race_data(session, jcd, rno, date_str):
 
         row['rank1'], row['rank2'], row['rank3'] = None, None, None
         try:
+            # 順位取得ロジック（ここが重要）
             for r in soup_res.select("table.is-w495 tbody tr"):
                 tds = r.select("td")
                 if len(tds) > 1:
                     rank_idx = clean_text(tds[0].text)
                     boat_text = clean_text(tds[1].text)
+                    # "1" とか "1号艇" などをパース
                     boat_match = re.search(r"^(\d{1})", boat_text)
                     if rank_idx.isdigit() and int(rank_idx) <= 3 and boat_match:
                         row[f'rank{rank_idx}'] = int(boat_match.group(1))
         except: pass
+        
+        # 1着が1号艇かどうか
         row['res1'] = 1 if row.get('rank1') == 1 else 0
 
         row['tansho'] = extract_payout(soup_res, "単勝")
@@ -125,7 +120,7 @@ def scrape_race_data(session, jcd, rno, date_str):
             row[f'f{i}'] = 0
             row[f'st{i}'] = 0.20
 
-            # [A] 展示タイム (beforeinfo)
+            # [A] 展示タイム
             try:
                 boat_cell = soup_before.select_one(f".is-boatColor{i}")
                 if boat_cell:
@@ -136,7 +131,7 @@ def scrape_race_data(session, jcd, rno, date_str):
                             row[f'ex{i}'] = float(ex_val)
             except: pass
 
-            # [B] 勝率, F, ST, モーター (racelist)
+            # [B] 勝率, F, ST, モーター
             try:
                 list_cell = soup_list.select_one(f".is-boatColor{i}")
                 if list_cell:
@@ -174,7 +169,7 @@ def process_wrapper(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # ここが重要：--start と --end を受け取れるように設定
+    # --start と --end を受け取る設定
     parser.add_argument("--start", required=True, help="開始日 (YYYY-MM-DD)")
     parser.add_argument("--end", required=True, help="終了日 (YYYY-MM-DD)")
     args = parser.parse_args()
@@ -185,11 +180,12 @@ if __name__ == "__main__":
     current = start_d
     
     safe_print(f"🚀 収集開始: {args.start} 〜 {args.end}")
-    send_discord(f"🏃 **データ収集開始** ({args.start} - {args.end})")
+    # 通知はここでは送らない
     
     os.makedirs("data", exist_ok=True)
     filename = f"data/data_{args.start.replace('-','')}_{args.end.replace('-','')}.csv"
     
+    # ヘッダー書き込み
     if not os.path.exists(filename):
         cols = ['date', 'jcd', 'rno', 'wind', 'res1', 'rank1', 'rank2', 'rank3', 
                 'tansho', 'nirentan', 'sanrentan', 'sanrenpuku', 'payout']
@@ -213,6 +209,7 @@ if __name__ == "__main__":
         
         if results:
             df = pd.DataFrame(results)
+            # カラム順序を統一
             cols = ['date', 'jcd', 'rno', 'wind', 'res1', 'rank1', 'rank2', 'rank3', 
                     'tansho', 'nirentan', 'sanrentan', 'sanrenpuku', 'payout']
             for i in range(1, 7):
@@ -229,4 +226,3 @@ if __name__ == "__main__":
         current += timedelta(days=1)
     
     safe_print(f"🎉 完了: {filename}")
-    send_discord(f"🎉 **完了**\n📁 `{filename}`")
