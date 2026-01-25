@@ -8,6 +8,7 @@ import unicodedata
 import argparse
 import random
 import threading
+import gc
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from requests.adapters import HTTPAdapter
@@ -16,9 +17,13 @@ from urllib3.util import Retry
 # ==========================================
 # ⚙️ 設定エリア
 # ==========================================
-MAX_WORKERS = 16       # 並列数
-MAX_RETRIES = 5        # リトライ回数
-RETRY_DELAY = 3        # リトライ待機
+# デフォルト収集年 (2025年は収集済みのため除外)
+DEFAULT_YEARS = [2023, 2024]
+
+# 並列数
+MAX_WORKERS = 16
+MAX_RETRIES = 5
+RETRY_DELAY = 3
 
 UA_LIST = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -32,10 +37,16 @@ def safe_print(msg):
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def send_discord(content):
-    """Discordに通知を送る"""
+    """
+    環境変数 DISCORD_WEBHOOK_URL から自動的にURLを取得して通知します。
+    GitHub ActionsのSecretsなどで設定してください。
+    """
     url = os.environ.get("DISCORD_WEBHOOK_URL")
-    if not url: return
+    if not url:
+        return # 設定がなければ何もしない（エラーも出さない）
+    
     try:
+        time.sleep(1) # レート制限回避
         requests.post(url, json={"content": content}, timeout=10)
     except Exception as e:
         safe_print(f"⚠️ Discord通知エラー: {e}")
@@ -94,13 +105,11 @@ def scrape_race_data(session, jcd, rno, date_str):
     try:
         row = {'date': date_str, 'jcd': jcd, 'rno': rno}
 
-        # --- ① 風速 ---
         try:
             wind_elem = soup_before.select_one(".weather1_bodyUnitLabelData")
             row['wind'] = float(clean_text(wind_elem.text).replace("m", "").replace(" ", "")) if wind_elem else 0.0
         except: row['wind'] = 0.0
 
-        # --- ② 着順 ---
         row['rank1'], row['rank2'], row['rank3'] = None, None, None
         try:
             for r in soup_res.select("table.is-w495 tbody tr"):
@@ -114,14 +123,12 @@ def scrape_race_data(session, jcd, rno, date_str):
         except: pass
         row['res1'] = 1 if row.get('rank1') == 1 else 0
 
-        # --- ③ 配当 ---
         row['tansho'] = extract_payout(soup_res, "単勝")
         row['nirentan'] = extract_payout(soup_res, "2連単")
         row['sanrentan'] = extract_payout(soup_res, "3連単")
         row['sanrenpuku'] = extract_payout(soup_res, "3連複")
         row['payout'] = row['sanrentan']
 
-        # --- ④ 各艇データ ---
         for i in range(1, 7):
             row[f'wr{i}'] = 0.0
             row[f'mo{i}'] = 0.0
@@ -146,7 +153,6 @@ def scrape_race_data(session, jcd, rno, date_str):
                 if list_cell:
                     tds = list_cell.find_parent("tbody").select("td")
                     
-                    # 1. F数 & ST (td[3]周辺)
                     if len(tds) > 3:
                         txt = clean_text(tds[3].text)
                         f_match = re.search(r"F(\d+)", txt)
@@ -157,13 +163,11 @@ def scrape_race_data(session, jcd, rno, date_str):
                             val = float(st_match.group(1))
                             if val < 1.0: row[f'st{i}'] = val
 
-                    # 2. 全国勝率 (td[4]周辺)
                     if len(tds) > 4:
                         txt = tds[4].get_text(" ").strip()
                         wr_match = re.search(r"(\d\.\d{2})", txt)
                         if wr_match: row[f'wr{i}'] = float(wr_match.group(1))
 
-                    # 3. モーター勝率 (td[6]周辺)
                     if len(tds) > 6:
                         txt = tds[6].get_text(" ").strip()
                         mo_vals = re.findall(r"(\d{1,3}\.\d{2})", txt)
@@ -179,37 +183,41 @@ def process_wrapper(args):
     time.sleep(random.uniform(0.5, 1.5))
     return scrape_race_data(session, jcd, rno, date_str)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--start", required=True)
-    parser.add_argument("--end", required=True)
-    args = parser.parse_args()
+def collect_year(year):
+    """指定年のデータを収集"""
+    start_date = f"{year}-01-01"
+    end_date = f"{year}-12-31"
+    
+    s_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    e_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    
+    if s_dt > datetime.now():
+        safe_print(f"⏩ {year}年は未来のためスキップ")
+        return
 
-    session = get_session()
-    start_d = datetime.strptime(args.start, "%Y-%m-%d")
-    end_d = datetime.strptime(args.end, "%Y-%m-%d")
-    current = start_d
-    
-    safe_print(f"🚀 収集開始: {args.start} 〜 {args.end}")
-    
+    if e_dt > datetime.now():
+        e_dt = datetime.now() - timedelta(days=1)
+
+    filename = f"data/race_data_{year}.csv"
     os.makedirs("data", exist_ok=True)
-    filename = f"data/data_{args.start.replace('-','')}_{args.end.replace('-','')}.csv"
     
-    # 【ここが修正点】最初に空ファイルを作成してしまう（エラー回避）
     if not os.path.exists(filename):
-        # カラム定義
         cols = ['date', 'jcd', 'rno', 'wind', 'res1', 'rank1', 'rank2', 'rank3', 
                 'tansho', 'nirentan', 'sanrentan', 'sanrenpuku', 'payout']
         for i in range(1, 7):
             cols.extend([f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
-        
-        # 空のDataFrameを作成してヘッダーのみ保存
         pd.DataFrame(columns=cols).to_csv(filename, index=False)
-        safe_print(f"📄 ファイル初期化: {filename}")
 
-    while current <= end_d:
+    safe_print(f"🏁 {year}年の収集開始...")
+    send_discord(f"🏃 **{year}年のデータ収集を開始しました**")
+
+    session = get_session()
+    current = s_dt
+    total_races = 0
+
+    while current <= e_dt:
         d_str = current.strftime("%Y%m%d")
-        safe_print(f"📅 {d_str} 処理中...")
+        safe_print(f"📅 {d_str} ({year}) 処理中...")
         
         tasks = []
         for jcd in range(1, 25):
@@ -223,14 +231,49 @@ if __name__ == "__main__":
         
         if results:
             df = pd.DataFrame(results)
-            # 必要なカラムのみ抽出して追記モードで保存
+            use_cols = ['date', 'jcd', 'rno', 'wind', 'res1', 'rank1', 'rank2', 'rank3', 
+                        'tansho', 'nirentan', 'sanrentan', 'sanrenpuku', 'payout']
+            for i in range(1, 7):
+                use_cols.extend([f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
+            
+            # データフレームのカラムを整理
+            df = df.reindex(columns=use_cols)
+            
             df.to_csv(filename, mode='a', index=False, header=False)
-            safe_print(f"  ✅ {len(df)}レース 追記完了")
+            safe_print(f"  ✅ {len(df)}レース 追記")
+            total_races += len(df)
         else:
-            safe_print(f"  ⚠️ データなし (SKIP)")
+            safe_print(f"  ⚠️ データなし")
         
         current += timedelta(days=1)
+        
+        if current.day == 1:
+            gc.collect()
+
+    msg = f"🎉 **{year}年 収集完了** (全{total_races}レース)\n📁 `{filename}`"
+    safe_print(msg)
+    send_discord(msg)
     
-    finish_msg = f"🎉 **データ収集完了**\n📁 `{filename}`\n📅 {args.start} 〜 {args.end}"
-    safe_print(finish_msg)
-    send_discord(finish_msg)
+    session.close()
+    gc.collect()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    # 引数なしなら 2023, 2024 を収集
+    parser.add_argument("--years", nargs="+", type=int, default=DEFAULT_YEARS, help="収集する年")
+    args = parser.parse_args()
+
+    safe_print(f"🚀 過去データ収集モード起動 (対象: {args.years})")
+    
+    for year in args.years:
+        try:
+            collect_year(year)
+            safe_print(f"💤 クールダウン中...")
+            time.sleep(10)
+        except Exception as e:
+            err_msg = f"🔥 {year}年 エラー: {e}"
+            safe_print(err_msg)
+            send_discord(err_msg)
+    
+    safe_print("🎊 全工程完了")
+    send_discord("🎊 **全データ収集完了**")
