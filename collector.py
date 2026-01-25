@@ -34,9 +34,7 @@ def safe_print(msg):
 def send_discord(content):
     """Discordに通知を送る"""
     url = os.environ.get("DISCORD_WEBHOOK_URL")
-    if not url:
-        safe_print("⚠️ Discord Webhook URLが設定されていません。通知をスキップします。")
-        return
+    if not url: return
     try:
         requests.post(url, json={"content": content}, timeout=10)
     except Exception as e:
@@ -84,7 +82,6 @@ def extract_payout(soup, key_text):
 def scrape_race_data(session, jcd, rno, date_str):
     base_url = "https://www.boatrace.jp/owpc/pc/race"
     
-    # 3つのページを取得
     soup_before, err = get_soup(session, f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}")
     if err == "SKIP" or not soup_before: return None
 
@@ -198,7 +195,17 @@ if __name__ == "__main__":
     os.makedirs("data", exist_ok=True)
     filename = f"data/data_{args.start.replace('-','')}_{args.end.replace('-','')}.csv"
     
-    file_exists = os.path.exists(filename)
+    # 【ここが修正点】最初に空ファイルを作成してしまう（エラー回避）
+    if not os.path.exists(filename):
+        # カラム定義
+        cols = ['date', 'jcd', 'rno', 'wind', 'res1', 'rank1', 'rank2', 'rank3', 
+                'tansho', 'nirentan', 'sanrentan', 'sanrenpuku', 'payout']
+        for i in range(1, 7):
+            cols.extend([f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
+        
+        # 空のDataFrameを作成してヘッダーのみ保存
+        pd.DataFrame(columns=cols).to_csv(filename, index=False)
+        safe_print(f"📄 ファイル初期化: {filename}")
 
     while current <= end_d:
         d_str = current.strftime("%Y%m%d")
@@ -216,21 +223,14 @@ if __name__ == "__main__":
         
         if results:
             df = pd.DataFrame(results)
-            cols = ['date', 'jcd', 'rno', 'wind', 'res1', 'rank1', 'rank2', 'rank3', 
-                    'tansho', 'nirentan', 'sanrentan', 'sanrenpuku', 'payout']
-            for i in range(1, 7):
-                cols.extend([f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
-            
-            use_cols = [c for c in cols if c in df.columns]
-            df = df[use_cols]
-            
-            df.to_csv(filename, mode='a', index=False, header=not file_exists)
-            file_exists = True
-            safe_print(f"  ✅ {len(df)}レース 保存完了")
+            # 必要なカラムのみ抽出して追記モードで保存
+            df.to_csv(filename, mode='a', index=False, header=False)
+            safe_print(f"  ✅ {len(df)}レース 追記完了")
+        else:
+            safe_print(f"  ⚠️ データなし (SKIP)")
         
         current += timedelta(days=1)
     
-    # 完了通知
-    finish_msg = f"🎉 **データ収集が完了しました！**\n📁 ファイル: `{filename}`\n📅 期間: {args.start} 〜 {args.end}"
+    finish_msg = f"🎉 **データ収集完了**\n📁 `{filename}`\n📅 {args.start} 〜 {args.end}"
     safe_print(finish_msg)
     send_discord(finish_msg)
