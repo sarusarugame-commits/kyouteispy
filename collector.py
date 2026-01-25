@@ -1,61 +1,236 @@
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
+import time
 import re
+import os
+import unicodedata
+import argparse
+import random
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
-# ターゲット：2025/01/01 桐生 1R
-target_urls = {
-    "番組表 (racelist)": "https://www.boatrace.jp/owpc/pc/race/racelist?rno=1&jcd=01&hd=20250101",
-    "直前情報 (beforeinfo)": "https://www.boatrace.jp/owpc/pc/race/beforeinfo?rno=1&jcd=01&hd=20250101"
-}
+# ==========================================
+# ⚙️ 設定エリア
+# ==========================================
+MAX_WORKERS = 16       # 並列数
+MAX_RETRIES = 5        # リトライ回数
+RETRY_DELAY = 3        # リトライ待機
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
+UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+]
 
-def clean(text):
-    return text.replace("\n", "").replace("\r", "").replace(" ", "").strip()
+print_lock = threading.Lock()
 
-print("=== 🛠️ 診断開始 ===")
+def safe_print(msg):
+    with print_lock:
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-for name, url in target_urls.items():
-    print(f"\n📡 {name} にアクセス中...")
-    print(f"URL: {url}")
-    
+def send_discord(content):
+    """Discordに通知を送る"""
+    url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not url:
+        safe_print("⚠️ Discord Webhook URLが設定されていません。通知をスキップします。")
+        return
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        res.encoding = res.apparent_encoding
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # 1号艇（is-boatColor1）を探す
-        boat1 = soup.select_one(".is-boatColor1")
-        
-        if boat1:
-            tbody = boat1.find_parent("tbody")
-            tds = tbody.select("td")
-            
-            print(f"✅ 1号艇のデータを取得しました。各セルの内容を確認してください：")
-            for i, td in enumerate(tds):
-                # 中身を少し綺麗にして表示
-                content = clean(td.text)
-                print(f"  [td番号 {i}] : {content}")
-                
-            # --- 簡易解析チェック ---
-            if "racelist" in url:
-                # 勝率は通常 td[3] にある "X.XX" という数値
-                print("\n  🔍 [勝率チェック]")
-                if len(tds) > 3:
-                    print(f"  今のコードはここを見ています -> td[3]: {clean(tds[3].text)}")
-                
-            if "beforeinfo" in url:
-                # モーター勝率は通常 td[2] にある "XX.X%"
-                print("\n  🔍 [モーターチェック]")
-                if len(tds) > 2:
-                    print(f"  今のコードはここを見ています -> td[2]: {clean(tds[2].text)}")
-                
-        else:
-            print("❌ 1号艇の要素 (.is-boatColor1) が見つかりませんでした。HTML構造が大幅に違う可能性があります。")
-            
+        requests.post(url, json={"content": content}, timeout=10)
     except Exception as e:
-        print(f"❌ エラー発生: {e}")
+        safe_print(f"⚠️ Discord通知エラー: {e}")
 
-print("\n=== 診断終了 ===")
+def clean_text(text):
+    if not text: return ""
+    text = unicodedata.normalize('NFKC', str(text))
+    return text.replace("\n", "").replace("\r", "").replace("¥", "").replace(",", "").strip()
+
+def get_session():
+    session = requests.Session()
+    retries = Retry(total=MAX_RETRIES, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+    adapter = HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS, max_retries=retries)
+    session.mount("https://", adapter)
+    return session
+
+def get_soup(session, url):
+    for i in range(MAX_RETRIES):
+        try:
+            headers = {'User-Agent': random.choice(UA_LIST)}
+            res = session.get(url, headers=headers, timeout=30)
+            res.encoding = res.apparent_encoding
+            if res.status_code == 200:
+                if "データがありません" in res.text: return None, "SKIP"
+                return BeautifulSoup(res.text, 'html.parser'), None
+            time.sleep(random.uniform(1, 2))
+        except:
+            time.sleep(RETRY_DELAY)
+    return None, "ERROR"
+
+def extract_payout(soup, key_text):
+    try:
+        for tbl in soup.select("table"):
+            if key_text in tbl.text:
+                for tr in tbl.select("tr"):
+                    if key_text in tr.text:
+                        for td in tr.select("td"):
+                            txt = clean_text(td.text)
+                            if txt.isdigit() and len(txt) >= 2:
+                                return int(txt)
+    except: pass
+    return 0
+
+def scrape_race_data(session, jcd, rno, date_str):
+    base_url = "https://www.boatrace.jp/owpc/pc/race"
+    
+    # 3つのページを取得
+    soup_before, err = get_soup(session, f"{base_url}/beforeinfo?rno={rno}&jcd={jcd:02d}&hd={date_str}")
+    if err == "SKIP" or not soup_before: return None
+
+    soup_res, err = get_soup(session, f"{base_url}/raceresult?rno={rno}&jcd={jcd:02d}&hd={date_str}")
+    if not soup_res: return None
+
+    soup_list, err = get_soup(session, f"{base_url}/racelist?rno={rno}&jcd={jcd:02d}&hd={date_str}")
+    if not soup_list: return None
+
+    try:
+        row = {'date': date_str, 'jcd': jcd, 'rno': rno}
+
+        # --- ① 風速 ---
+        try:
+            wind_elem = soup_before.select_one(".weather1_bodyUnitLabelData")
+            row['wind'] = float(clean_text(wind_elem.text).replace("m", "").replace(" ", "")) if wind_elem else 0.0
+        except: row['wind'] = 0.0
+
+        # --- ② 着順 ---
+        row['rank1'], row['rank2'], row['rank3'] = None, None, None
+        try:
+            for r in soup_res.select("table.is-w495 tbody tr"):
+                tds = r.select("td")
+                if len(tds) > 1:
+                    rank_idx = clean_text(tds[0].text)
+                    boat_text = clean_text(tds[1].text)
+                    boat_match = re.search(r"^(\d{1})", boat_text)
+                    if rank_idx.isdigit() and int(rank_idx) <= 3 and boat_match:
+                        row[f'rank{rank_idx}'] = int(boat_match.group(1))
+        except: pass
+        row['res1'] = 1 if row.get('rank1') == 1 else 0
+
+        # --- ③ 配当 ---
+        row['tansho'] = extract_payout(soup_res, "単勝")
+        row['nirentan'] = extract_payout(soup_res, "2連単")
+        row['sanrentan'] = extract_payout(soup_res, "3連単")
+        row['sanrenpuku'] = extract_payout(soup_res, "3連複")
+        row['payout'] = row['sanrentan']
+
+        # --- ④ 各艇データ ---
+        for i in range(1, 7):
+            row[f'wr{i}'] = 0.0
+            row[f'mo{i}'] = 0.0
+            row[f'ex{i}'] = 0.0
+            row[f'f{i}'] = 0
+            row[f'st{i}'] = 0.20
+
+            # [A] 展示タイム (beforeinfo)
+            try:
+                boat_cell = soup_before.select_one(f".is-boatColor{i}")
+                if boat_cell:
+                    tds = boat_cell.find_parent("tbody").select("td")
+                    if len(tds) > 4:
+                        ex_val = clean_text(tds[4].text)
+                        if re.match(r"\d\.\d{2}", ex_val):
+                            row[f'ex{i}'] = float(ex_val)
+            except: pass
+
+            # [B] 勝率, F, ST, モーター (racelist)
+            try:
+                list_cell = soup_list.select_one(f".is-boatColor{i}")
+                if list_cell:
+                    tds = list_cell.find_parent("tbody").select("td")
+                    
+                    # 1. F数 & ST (td[3]周辺)
+                    if len(tds) > 3:
+                        txt = clean_text(tds[3].text)
+                        f_match = re.search(r"F(\d+)", txt)
+                        if f_match: row[f'f{i}'] = int(f_match.group(1))
+                        
+                        st_match = re.search(r"(\.\d{2}|\d\.\d{2})", txt)
+                        if st_match:
+                            val = float(st_match.group(1))
+                            if val < 1.0: row[f'st{i}'] = val
+
+                    # 2. 全国勝率 (td[4]周辺)
+                    if len(tds) > 4:
+                        txt = tds[4].get_text(" ").strip()
+                        wr_match = re.search(r"(\d\.\d{2})", txt)
+                        if wr_match: row[f'wr{i}'] = float(wr_match.group(1))
+
+                    # 3. モーター勝率 (td[6]周辺)
+                    if len(tds) > 6:
+                        txt = tds[6].get_text(" ").strip()
+                        mo_vals = re.findall(r"(\d{1,3}\.\d{2})", txt)
+                        if len(mo_vals) >= 1:
+                            row[f'mo{i}'] = float(mo_vals[0])
+            except: pass
+        
+        return row
+    except: return None
+
+def process_wrapper(args):
+    session, jcd, rno, date_str = args
+    time.sleep(random.uniform(0.5, 1.5))
+    return scrape_race_data(session, jcd, rno, date_str)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", required=True)
+    parser.add_argument("--end", required=True)
+    args = parser.parse_args()
+
+    session = get_session()
+    start_d = datetime.strptime(args.start, "%Y-%m-%d")
+    end_d = datetime.strptime(args.end, "%Y-%m-%d")
+    current = start_d
+    
+    safe_print(f"🚀 収集開始: {args.start} 〜 {args.end}")
+    
+    os.makedirs("data", exist_ok=True)
+    filename = f"data/data_{args.start.replace('-','')}_{args.end.replace('-','')}.csv"
+    
+    file_exists = os.path.exists(filename)
+
+    while current <= end_d:
+        d_str = current.strftime("%Y%m%d")
+        safe_print(f"📅 {d_str} 処理中...")
+        
+        tasks = []
+        for jcd in range(1, 25):
+            for rno in range(1, 13):
+                tasks.append((session, jcd, rno, d_str))
+        
+        results = []
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            for res in executor.map(process_wrapper, tasks):
+                if res: results.append(res)
+        
+        if results:
+            df = pd.DataFrame(results)
+            cols = ['date', 'jcd', 'rno', 'wind', 'res1', 'rank1', 'rank2', 'rank3', 
+                    'tansho', 'nirentan', 'sanrentan', 'sanrenpuku', 'payout']
+            for i in range(1, 7):
+                cols.extend([f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
+            
+            use_cols = [c for c in cols if c in df.columns]
+            df = df[use_cols]
+            
+            df.to_csv(filename, mode='a', index=False, header=not file_exists)
+            file_exists = True
+            safe_print(f"  ✅ {len(df)}レース 保存完了")
+        
+        current += timedelta(days=1)
+    
+    # 完了通知
+    finish_msg = f"🎉 **データ収集が完了しました！**\n📁 ファイル: `{filename}`\n📅 期間: {args.start} 〜 {args.end}"
+    safe_print(finish_msg)
+    send_discord(finish_msg)
