@@ -1,42 +1,54 @@
-name: 20x Parallel Full Collection
+name: 20x Parallel Auto Loop
 
 on:
-  workflow_dispatch: # 手動実行
+  workflow_dispatch:
+    inputs:
+      target_year:
+        description: '開始する年 (例: 2023)'
+        required: true
+        default: '2023'
+      end_year:
+        description: '終了する年 (例: 2024)'
+        required: true
+        default: '2024'
 
 permissions:
   contents: write
+  actions: write # ループ処理（次の年を起動）するために必要
 
 jobs:
-  # 20台のマシンで分散収集
+  # ========================================================
+  # 1. あなたの指定した「20分割」スケジュールで並列収集
+  # ========================================================
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # 6時間
+    timeout-minutes: 360
     strategy:
       fail-fast: false
-      max-parallel: 20 # 20台同時実行
+      max-parallel: 20
       matrix:
         include:
-          # 2025年を約18日ずつ20分割
-          - { s: "2025-01-01", e: "2025-01-18" }
-          - { s: "2025-01-19", e: "2025-02-05" }
-          - { s: "2025-02-06", e: "2025-02-24" }
-          - { s: "2025-02-25", e: "2025-03-14" }
-          - { s: "2025-03-15", e: "2025-04-01" }
-          - { s: "2025-04-02", e: "2025-04-20" }
-          - { s: "2025-04-21", e: "2025-05-08" }
-          - { s: "2025-05-09", e: "2025-05-27" }
-          - { s: "2025-05-28", e: "2025-06-14" }
-          - { s: "2025-06-15", e: "2025-07-02" }
-          - { s: "2025-07-03", e: "2025-07-21" }
-          - { s: "2025-07-22", e: "2025-08-09" }
-          - { s: "2025-08-10", e: "2025-08-27" }
-          - { s: "2025-08-28", e: "2025-09-14" }
-          - { s: "2025-09-15", e: "2025-10-02" }
-          - { s: "2025-10-03", e: "2025-10-21" }
-          - { s: "2025-10-22", e: "2025-11-08" }
-          - { s: "2025-11-09", e: "2025-11-26" }
-          - { s: "2025-11-27", e: "2025-12-14" }
-          - { s: "2025-12-15", e: "2025-12-31" }
+          # 年の部分を除いた「月-日」の定義（全20分割）
+          - { s: "01-01", e: "01-18" }
+          - { s: "01-19", e: "02-05" }
+          - { s: "02-06", e: "02-24" }
+          - { s: "02-25", e: "03-14" }
+          - { s: "03-15", e: "04-01" }
+          - { s: "04-02", e: "04-20" }
+          - { s: "04-21", e: "05-08" }
+          - { s: "05-09", e: "05-27" }
+          - { s: "05-28", e: "06-14" }
+          - { s: "06-15", e: "07-02" }
+          - { s: "07-03", e: "07-21" }
+          - { s: "07-22", e: "08-09" }
+          - { s: "08-10", e: "08-27" }
+          - { s: "08-28", e: "09-14" }
+          - { s: "09-15", e: "10-02" }
+          - { s: "10-03", e: "10-21" }
+          - { s: "10-22", e: "11-08" }
+          - { s: "11-09", e: "11-26" }
+          - { s: "11-27", e: "12-14" }
+          - { s: "12-15", e: "12-31" }
 
     steps:
       - uses: actions/checkout@v4
@@ -44,22 +56,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
           
       - run: pip install pandas requests beautifulsoup4
 
-      # 並列数16で実行
-      - name: Run Collector
-        run: python collector.py --start ${{ matrix.s }} --end ${{ matrix.e }}
+      # 入力された年(target_year)とマトリックスの日付を組み合わせて実行
+      - name: Run Collector (${{ inputs.target_year }}-${{ matrix.s }} ~ ${{ matrix.e }})
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          YEAR="${{ inputs.target_year }}"
+          START="$YEAR-${{ matrix.s }}"
+          END="$YEAR-${{ matrix.e }}"
+          
+          echo "🚀 Running: $START to $END"
+          python collector.py --start $START --end $END
 
-      # 終わったらCSVを一時アップロード
       - uses: actions/upload-artifact@v4
         with:
           name: chunk-${{ matrix.s }}
           path: data/*.csv
           retention-days: 1
 
-  # 全部分終わったら結合してコミット
-  merge:
+  # ========================================================
+  # 2. 結合・保存・そして次の年へリレー
+  # ========================================================
+  merge-and-next:
     needs: collect
     runs-on: ubuntu-latest
     steps:
@@ -76,32 +98,57 @@ jobs:
           pattern: chunk-*
           merge-multiple: true
 
-      - name: Merge and Save
-        shell: python
+      - name: Merge CSVs
         run: |
+          python -c "
           import pandas as pd
           import glob
+          import os
           
-          files = glob.glob("all_data/*.csv")
+          files = glob.glob('all_data/*.csv')
           if not files:
-            print("No data found!")
-            exit(1)
-            
-          print(f"Merging {len(files)} files...")
-          df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+              print('⚠️ データなし')
+              exit(0)
+              
+          print(f'📦 {len(files)}ファイルを結合中...')
+          df_list = []
+          for f in files:
+              try:
+                  tmp = pd.read_csv(f)
+                  if not tmp.empty: df_list.append(tmp)
+              except: pass
           
-          # 日付・場・レースでソート
-          df['date'] = df['date'].astype(int)
-          df = df.sort_values(['date', 'jcd', 'rno'])
-          
-          filename = "FINAL_FULL_DATA_2025.csv"
-          df.to_csv(filename, index=False)
-          print(f"Saved {filename} with {len(df)} rows.")
+          if df_list:
+              df = pd.concat(df_list, ignore_index=True)
+              df['date'] = df['date'].astype(int)
+              df = df.sort_values(['date', 'jcd', 'rno'])
+              
+              filename = 'FINAL_FULL_DATA_${{ inputs.target_year }}.csv'
+              df.to_csv(filename, index=False)
+              print(f'✅ 保存完了: {filename} ({len(df)}行)')
+          "
 
       - name: Push to Git
         run: |
           git config --global user.name "BoatBot"
           git config --global user.email "bot@example.com"
-          git add FINAL_FULL_DATA_2025.csv
-          git commit -m "Add FULL 2025 DATA set" || echo "No changes"
-          git push
+          git pull origin main --rebase || true
+          git add FINAL_FULL_DATA_*.csv
+          git commit -m "Add Data ${{ inputs.target_year }}" || echo "No changes"
+          git push origin main
+
+      # 🔥 自動ループ機能 🔥
+      - name: Trigger Next Year
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT=${{ inputs.target_year }}
+          END=${{ inputs.end_year }}
+          NEXT=$((CURRENT + 1))
+
+          if [ "$NEXT" -le "$END" ]; then
+            echo "🔄 $CURRENT年完了！次は $NEXT年 を20並列で開始します..."
+            gh workflow run 20_parallel_loop.yml -f target_year=$NEXT -f end_year=$END
+          else
+            echo "🎉 全指定期間 ($END年まで) の収集が完了しました！"
+          fi
