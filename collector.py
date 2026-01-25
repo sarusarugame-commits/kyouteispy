@@ -17,10 +17,6 @@ from urllib3.util import Retry
 # ==========================================
 # ⚙️ 設定エリア
 # ==========================================
-# デフォルト収集年 (2025年は収集済みのため除外)
-DEFAULT_YEARS = [2023, 2024]
-
-# 並列数
 MAX_WORKERS = 16
 MAX_RETRIES = 5
 RETRY_DELAY = 3
@@ -37,19 +33,12 @@ def safe_print(msg):
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def send_discord(content):
-    """
-    環境変数 DISCORD_WEBHOOK_URL から自動的にURLを取得して通知します。
-    GitHub ActionsのSecretsなどで設定してください。
-    """
     url = os.environ.get("DISCORD_WEBHOOK_URL")
-    if not url:
-        return # 設定がなければ何もしない（エラーも出さない）
-    
+    if not url: return
     try:
-        time.sleep(1) # レート制限回避
+        time.sleep(1)
         requests.post(url, json={"content": content}, timeout=10)
-    except Exception as e:
-        safe_print(f"⚠️ Discord通知エラー: {e}")
+    except: pass
 
 def clean_text(text):
     if not text: return ""
@@ -136,7 +125,6 @@ def scrape_race_data(session, jcd, rno, date_str):
             row[f'f{i}'] = 0
             row[f'st{i}'] = 0.20
 
-            # [A] 展示タイム (beforeinfo)
             try:
                 boat_cell = soup_before.select_one(f".is-boatColor{i}")
                 if boat_cell:
@@ -147,7 +135,6 @@ def scrape_race_data(session, jcd, rno, date_str):
                             row[f'ex{i}'] = float(ex_val)
             except: pass
 
-            # [B] 勝率, F, ST, モーター (racelist)
             try:
                 list_cell = soup_list.select_one(f".is-boatColor{i}")
                 if list_cell:
@@ -157,7 +144,6 @@ def scrape_race_data(session, jcd, rno, date_str):
                         txt = clean_text(tds[3].text)
                         f_match = re.search(r"F(\d+)", txt)
                         if f_match: row[f'f{i}'] = int(f_match.group(1))
-                        
                         st_match = re.search(r"(\.\d{2}|\d\.\d{2})", txt)
                         if st_match:
                             val = float(st_match.group(1))
@@ -183,22 +169,13 @@ def process_wrapper(args):
     time.sleep(random.uniform(0.5, 1.5))
     return scrape_race_data(session, jcd, rno, date_str)
 
-def collect_year(year):
-    """指定年のデータを収集"""
-    start_date = f"{year}-01-01"
-    end_date = f"{year}-12-31"
-    
+def run_collection(start_date, end_date, filename_suffix=""):
     s_dt = datetime.strptime(start_date, "%Y-%m-%d")
     e_dt = datetime.strptime(end_date, "%Y-%m-%d")
     
-    if s_dt > datetime.now():
-        safe_print(f"⏩ {year}年は未来のためスキップ")
-        return
+    if s_dt > datetime.now(): return
 
-    if e_dt > datetime.now():
-        e_dt = datetime.now() - timedelta(days=1)
-
-    filename = f"data/race_data_{year}.csv"
+    filename = f"data/race_data_{filename_suffix}.csv"
     os.makedirs("data", exist_ok=True)
     
     if not os.path.exists(filename):
@@ -208,8 +185,8 @@ def collect_year(year):
             cols.extend([f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
         pd.DataFrame(columns=cols).to_csv(filename, index=False)
 
-    safe_print(f"🏁 {year}年の収集開始...")
-    send_discord(f"🏃 **{year}年のデータ収集を開始しました**")
+    safe_print(f"🏁 収集開始 ({start_date} 〜 {end_date}) -> {filename}")
+    send_discord(f"🏃 **収集開始**\n期間: {start_date} 〜 {end_date}")
 
     session = get_session()
     current = s_dt
@@ -217,7 +194,7 @@ def collect_year(year):
 
     while current <= e_dt:
         d_str = current.strftime("%Y%m%d")
-        safe_print(f"📅 {d_str} ({year}) 処理中...")
+        safe_print(f"📅 {d_str} 処理中...")
         
         tasks = []
         for jcd in range(1, 25):
@@ -236,44 +213,53 @@ def collect_year(year):
             for i in range(1, 7):
                 use_cols.extend([f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
             
-            # データフレームのカラムを整理
+            # 列の正規化と並べ替え
             df = df.reindex(columns=use_cols)
             
             df.to_csv(filename, mode='a', index=False, header=False)
             safe_print(f"  ✅ {len(df)}レース 追記")
             total_races += len(df)
         else:
-            safe_print(f"  ⚠️ データなし")
+            safe_print(f"  ⚠️ データなし (SKIP)")
         
         current += timedelta(days=1)
-        
-        if current.day == 1:
-            gc.collect()
+        if current.day == 1: gc.collect()
 
-    msg = f"🎉 **{year}年 収集完了** (全{total_races}レース)\n📁 `{filename}`"
+    msg = f"🎉 **完了** ({total_races}レース)\n📁 `{filename}`"
     safe_print(msg)
     send_discord(msg)
-    
     session.close()
     gc.collect()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # 引数なしなら 2023, 2024 を収集
-    parser.add_argument("--years", nargs="+", type=int, default=DEFAULT_YEARS, help="収集する年")
+    # どっちのパターンも受け付けるように設定
+    parser.add_argument("--years", nargs="+", type=int, help="年指定 (例: 2023 2024)")
+    parser.add_argument("--start", type=str, help="開始日 (YYYY-MM-DD)")
+    parser.add_argument("--end", type=str, help="終了日 (YYYY-MM-DD)")
     args = parser.parse_args()
 
-    safe_print(f"🚀 過去データ収集モード起動 (対象: {args.years})")
+    safe_print(f"🚀 データ収集Bot起動")
+
+    # パターンA: 範囲指定 (--start --end)
+    if args.start and args.end:
+        run_collection(args.start, args.end, filename_suffix=f"{args.start.replace('-','')}_{args.end.replace('-','')}")
+
+    # パターンB: 年指定 (--years)
+    elif args.years:
+        for year in args.years:
+            start = f"{year}-01-01"
+            end = f"{year}-12-31"
+            run_collection(start, end, filename_suffix=str(year))
+            time.sleep(5)
+
+    # パターンC: 引数なし (デフォルト動作: 2023, 2024)
+    else:
+        safe_print("ℹ️ 引数なしのため、デフォルトで2023年と2024年を収集します")
+        for year in [2023, 2024]:
+            start = f"{year}-01-01"
+            end = f"{year}-12-31"
+            run_collection(start, end, filename_suffix=str(year))
+            time.sleep(5)
     
-    for year in args.years:
-        try:
-            collect_year(year)
-            safe_print(f"💤 クールダウン中...")
-            time.sleep(10)
-        except Exception as e:
-            err_msg = f"🔥 {year}年 エラー: {e}"
-            safe_print(err_msg)
-            send_discord(err_msg)
-    
-    safe_print("🎊 全工程完了")
-    send_discord("🎊 **全データ収集完了**")
+    safe_print("🎊 全工程終了")
