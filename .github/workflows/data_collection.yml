@@ -158,7 +158,7 @@ jobs:
 
           if [ "$NEXT" -le "$END" ]; then
             echo "🔄 $CURRENT年完了！次は $NEXT年 を開始します..."
-            gh workflow run 20_parallel_auto.yml -f target_year=$NEXT -f end_year=$END
+            gh workflow run 20_parallel_loop.yml -f target_year=$NEXT -f end_year=$END
           else
             echo "🎉 全指定期間 ($END年まで) の収集が完了しました！"
             # 全て終わった時の通知
