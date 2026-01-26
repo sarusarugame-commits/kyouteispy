@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   # ========================================================
-  # 1. 20並列収集 (通知なし)
+  # 1. 20並列収集
   # ========================================================
   collect:
     runs-on: ubuntu-latest
@@ -55,7 +55,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          # キャッシュ削除 (エラー回避)
           
       - run: pip install pandas requests beautifulsoup4
 
@@ -132,7 +131,6 @@ jobs:
           git commit -m "Add Data ${{ inputs.target_year }}" || echo "No changes"
           git push origin main
 
-      # 🔥 通知 (1年分完了時のみ) 🔥
       - name: Notify Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -145,7 +143,7 @@ jobs:
                  $DISCORD_WEBHOOK_URL
           fi
 
-      # 🔥 自動ループ機能 (ファイル名を20_parallel_auto.ymlに統一) 🔥
+      # 🔥 ここを修正しました (20_parallel_loop.yml を指定) 🔥
       - name: Trigger Next Year
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -156,7 +154,8 @@ jobs:
 
           if [ "$NEXT" -le "$END" ]; then
             echo "🔄 $CURRENT年完了！次は $NEXT年 を開始します..."
-            gh workflow run 20_parallel_auto.yml -f target_year=$NEXT -f end_year=$END
+            # ファイル名を 20_parallel_loop.yml に修正
+            gh workflow run 20_parallel_loop.yml -f target_year=$NEXT -f end_year=$END
           else
             echo "🎉 全指定期間 ($END年まで) の収集が完了しました！"
             if [ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
