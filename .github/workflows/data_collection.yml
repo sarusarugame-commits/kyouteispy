@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   # ========================================================
-  # 1. 20並列収集 (ここでの通知はなし)
+  # 1. 20並列収集 (通知なし)
   # ========================================================
   collect:
     runs-on: ubuntu-latest
@@ -55,7 +55,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          # cache: 'pip' を削除 (これがエラー原因だった)
+          # キャッシュ削除 (エラー回避)
           
       - run: pip install pandas requests beautifulsoup4
 
@@ -65,7 +65,6 @@ jobs:
           START="$YEAR-${{ matrix.s }}"
           END="$YEAR-${{ matrix.e }}"
           echo "🚀 Running: $START to $END"
-          # Discord通知の環境変数は削除(Python側で送らないため)
           python collector.py --start $START --end $END
 
       - uses: actions/upload-artifact@v4
@@ -95,7 +94,6 @@ jobs:
           merge-multiple: true
 
       - name: Merge and Save
-        id: merge_step
         run: |
           python -c "
           import pandas as pd
@@ -134,7 +132,7 @@ jobs:
           git commit -m "Add Data ${{ inputs.target_year }}" || echo "No changes"
           git push origin main
 
-      # 🔥 ここで通知 (1年分終わったタイミング) 🔥
+      # 🔥 通知 (1年分完了時のみ) 🔥
       - name: Notify Discord
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -143,11 +141,11 @@ jobs:
           if [ -n "$DISCORD_WEBHOOK_URL" ]; then
             curl -H "Content-Type: application/json" \
                  -X POST \
-                 -d "{\"content\": \"✅ **${TARGET_YEAR}年の収集・結合が完了しました！**\n次の年の処理があれば開始します。\"}" \
+                 -d "{\"content\": \"✅ **${TARGET_YEAR}年の収集が完了しました！**\"}" \
                  $DISCORD_WEBHOOK_URL
           fi
 
-      # 🔥 自動ループ機能 (次の年へ) 🔥
+      # 🔥 自動ループ機能 (ファイル名を20_parallel_auto.ymlに統一) 🔥
       - name: Trigger Next Year
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -158,10 +156,9 @@ jobs:
 
           if [ "$NEXT" -le "$END" ]; then
             echo "🔄 $CURRENT年完了！次は $NEXT年 を開始します..."
-            gh workflow run 20_parallel_loop.yml -f target_year=$NEXT -f end_year=$END
+            gh workflow run 20_parallel_auto.yml -f target_year=$NEXT -f end_year=$END
           else
             echo "🎉 全指定期間 ($END年まで) の収集が完了しました！"
-            # 全て終わった時の通知
             if [ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
                curl -H "Content-Type: application/json" \
                  -X POST \
