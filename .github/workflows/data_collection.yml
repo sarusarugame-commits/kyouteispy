@@ -143,7 +143,7 @@ jobs:
                  $DISCORD_WEBHOOK_URL
           fi
 
-      # 🔥 ここを修正しました (20_parallel_loop.yml を指定) 🔥
+      # 🔥 ここを修正しました (ワークフロー名で呼び出し) 🔥
       - name: Trigger Next Year
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -154,8 +154,8 @@ jobs:
 
           if [ "$NEXT" -le "$END" ]; then
             echo "🔄 $CURRENT年完了！次は $NEXT年 を開始します..."
-            # ファイル名を 20_parallel_loop.yml に修正
-            gh workflow run 20_parallel_loop.yml -f target_year=$NEXT -f end_year=$END
+            # ファイル名ではなく、1行目の 'name:' に書かれた名前を指定
+            gh workflow run "20x Parallel Auto Loop" -f target_year=$NEXT -f end_year=$END
           else
             echo "🎉 全指定期間 ($END年まで) の収集が完了しました！"
             if [ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
