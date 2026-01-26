@@ -122,13 +122,20 @@ jobs:
               print(f'Saved {filename} with {len(df)} rows.')
           "
 
+      # 🔥【重要】修正済みのPush手順 (コミットしてからPullする) 🔥
       - name: Push to Git
         run: |
           git config --global user.name "BoatBot"
           git config --global user.email "bot@example.com"
-          git pull origin main --rebase || true
+          
+          # 1. まず現在の変更をコミットする (これでunstagedエラー回避)
           git add FINAL_FULL_DATA_*.csv
-          git commit -m "Add Data ${{ inputs.target_year }}" || echo "No changes"
+          git commit -m "Add Data ${{ inputs.target_year }}" || echo "No changes to commit"
+          
+          # 2. リモートの最新状態を取り込む (競合時はこちらの変更を優先)
+          git pull origin main --rebase
+          
+          # 3. プッシュする
           git push origin main
 
       - name: Notify Discord
@@ -143,7 +150,6 @@ jobs:
                  $DISCORD_WEBHOOK_URL
           fi
 
-      # 🔥 ここを修正しました (ワークフロー名で呼び出し) 🔥
       - name: Trigger Next Year
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -154,7 +160,6 @@ jobs:
 
           if [ "$NEXT" -le "$END" ]; then
             echo "🔄 $CURRENT年完了！次は $NEXT年 を開始します..."
-            # ファイル名ではなく、1行目の 'name:' に書かれた名前を指定
             gh workflow run "20x Parallel Auto Loop" -f target_year=$NEXT -f end_year=$END
           else
             echo "🎉 全指定期間 ($END年まで) の収集が完了しました！"
