@@ -10,7 +10,7 @@ on:
       end_year:
         description: '終了する年 (例: 2024)'
         required: true
-        default: '2024'
+        default: '2025'
 
 permissions:
   contents: write
