@@ -17,8 +17,7 @@ from urllib3.util import Retry
 # ==========================================
 # ⚙️ 設定エリア
 # ==========================================
-# 並列数を20に変更
-MAX_WORKERS = 20  
+MAX_WORKERS = 20  # 並列数
 MAX_RETRIES = 5
 RETRY_DELAY = 3
 TIMEOUT_SEC = 20
@@ -40,11 +39,11 @@ def clean_text(text):
     return text.replace("\n", "").replace("\r", "").replace("¥", "").replace(",", "").strip()
 
 def get_column_names():
-    """CSVのカラム定義を一箇所で管理"""
     cols = ['date', 'jcd', 'rno', 'wind', 'res1', 'rank1', 'rank2', 'rank3', 
             'tansho', 'nirentan', 'sanrentan', 'sanrenpuku', 'payout']
+    # 選手ID (pid) を追加
     for i in range(1, 7):
-        cols.extend([f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
+        cols.extend([f'pid{i}', f'wr{i}', f'mo{i}', f'ex{i}', f'f{i}', f'st{i}'])
     return cols
 
 def get_session():
@@ -55,7 +54,6 @@ def get_session():
         status_forcelist=[500, 502, 503, 504],
         allowed_methods=["GET"]
     )
-    # 並列数に合わせてプールサイズも拡張
     adapter = HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS, max_retries=retries)
     session.mount("https://", adapter)
     return session
@@ -83,14 +81,18 @@ def get_soup(session, url):
 
 def extract_payout(soup, key_text):
     try:
-        for tbl in soup.select("table"):
+        # 配当テーブルをより厳密に検索
+        for tbl in soup.select("table.is-w495"):
             if key_text in tbl.text:
-                for tr in tbl.select("tr"):
+                rows = tbl.select("tr")
+                for tr in rows:
                     if key_text in tr.text:
-                        for td in tr.select("td"):
-                            txt = clean_text(td.text)
-                            if txt.isdigit() and (len(txt) >= 3 or int(txt) > 100):
-                                return int(txt)
+                        # 金額は最後のtdに入っていることが多い
+                        tds = tr.select("td")
+                        if not tds: continue
+                        txt = clean_text(tds[-1].text)
+                        if txt.isdigit():
+                            return int(txt)
     except: pass
     return 0
 
@@ -110,30 +112,32 @@ def scrape_race_data(session, jcd, rno, date_str):
     try:
         row = {'date': date_str, 'jcd': jcd, 'rno': rno}
 
-        # 天候・風
-        try:
-            wind_elem = soup_before.select_one(".weather1_bodyUnitLabelData") if soup_before else None
-            if wind_elem:
-                w_txt = clean_text(wind_elem.text)
-                m = re.search(r"(\d+)", w_txt)
-                row['wind'] = float(m.group(1)) if m else 0.0
-            else:
-                row['wind'] = 0.0
-        except: row['wind'] = 0.0
+        # 天候・風 (beforeinfoから取得)
+        row['wind'] = 0.0
+        if soup_before:
+            try:
+                # 天候情報のコンテナを探す
+                weather_div = soup_before.select_one(".weather1_body")
+                if weather_div:
+                    wind_elem = weather_div.select_one(".weather1_bodyUnitLabelData")
+                    if wind_elem:
+                        w_txt = clean_text(wind_elem.text)
+                        m = re.search(r"(\d+)", w_txt)
+                        row['wind'] = float(m.group(1)) if m else 0.0
+            except: pass
 
         # 順位
         row['rank1'], row['rank2'], row['rank3'] = None, None, None
         try:
             result_rows = soup_res.select("table.is-w495 tbody tr")
-            if len(result_rows) >= 1:
-                r1_txt = clean_text(result_rows[0].select("td")[1].text)
-                row['rank1'] = int(re.search(r"^(\d{1})", r1_txt).group(1))
-            if len(result_rows) >= 2:
-                r2_txt = clean_text(result_rows[1].select("td")[1].text)
-                row['rank2'] = int(re.search(r"^(\d{1})", r2_txt).group(1))
-            if len(result_rows) >= 3:
-                r3_txt = clean_text(result_rows[2].select("td")[1].text)
-                row['rank3'] = int(re.search(r"^(\d{1})", r3_txt).group(1))
+            for idx, r_key in enumerate(['rank1', 'rank2', 'rank3']):
+                if len(result_rows) > idx:
+                    # 着順の数字を取得
+                    rank_td = result_rows[idx].select("td")
+                    if len(rank_td) >= 2:
+                        r_txt = clean_text(rank_td[1].text) # 艇番
+                        if r_txt.isdigit():
+                            row[r_key] = int(r_txt)
         except: pass
         
         row['res1'] = 1 if row.get('rank1') == 1 else 0
@@ -145,67 +149,101 @@ def scrape_race_data(session, jcd, rno, date_str):
         row['sanrenpuku'] = extract_payout(soup_res, "3連複")
         row['payout'] = row['sanrentan']
 
-        # 各艇データ
+        # 各艇データ取得
         for i in range(1, 7):
-            row[f'wr{i}'] = 0.0
-            row[f'mo{i}'] = 0.0
-            row[f'ex{i}'] = 0.0
-            row[f'f{i}'] = 0
-            row[f'st{i}'] = 0.20
+            # 初期化
+            row[f'pid{i}'] = 0     # 選手ID
+            row[f'wr{i}'] = 0.0    # 勝率
+            row[f'mo{i}'] = 0.0    # モーター
+            row[f'ex{i}'] = 0.0    # 展示タイム
+            row[f'f{i}'] = 0       # フライング
+            row[f'st{i}'] = 0.20   # 平均ST
 
-            # 展示タイム
+            # 1. 出走表(racelist)から ID, 勝率, 平均ST, F数 を取得
+            if soup_list:
+                try:
+                    # 枠番ごとのtbodyを取得 (is-fs12クラスを持つtbody)
+                    tbodies = soup_list.select("tbody.is-fs12")
+                    if len(tbodies) >= i:
+                        tbody = tbodies[i-1] # 枠番に対応するtbody
+                        
+                        # --- 選手ID (登番) ---
+                        # <div class="is-fs11">4320 ... </div>
+                        toban_div = tbody.select_one("div.is-fs11")
+                        if toban_div:
+                            toban_txt = clean_text(toban_div.text)[:4]
+                            if toban_txt.isdigit():
+                                row[f'pid{i}'] = int(toban_txt)
+
+                        # --- 勝率, モーター, 平均ST ---
+                        # tdタグを全取得してインデックスで指定するのが確実
+                        tds = tbody.select("td")
+                        
+                        # 全国勝率 (通常インデックス4あたり)
+                        # HTML構造: 級別 | 全国勝率 | 当地勝率 ...
+                        # is-lineH2 クラスのセルなどを探す
+                        
+                        # テキスト全体から勝率っぽい「X.XX」を抽出する正規表現アプローチ
+                        full_text = tbody.text
+                        
+                        # 勝率 (1.00 - 9.99)
+                        wr_match = re.search(r"(\d\.\d{2})", full_text) # 最初にヒットするのが全国勝率の可能性が高い
+                        if wr_match:
+                            # 厳密には td[4] を指定すべきだが、サイト構造変化に強い正規表現で補完
+                            if len(tds) > 4:
+                                wr_txt = clean_text(tds[4].text)
+                                m = re.search(r"(\d\.\d{2})", wr_txt)
+                                if m: row[f'wr{i}'] = float(m.group(1))
+
+                        # モーター (td[6] or td[7])
+                        if len(tds) > 6:
+                            mo_txt = clean_text(tds[6].text) # 2連対率
+                            m = re.search(r"(\d{2}\.\d{2})", mo_txt)
+                            if m: row[f'mo{i}'] = float(m.group(1))
+                            
+                            # もしここになければ次のセルを確認
+                            if row[f'mo{i}'] == 0.0 and len(tds) > 7:
+                                mo_txt = clean_text(tds[7].text)
+                                m = re.search(r"(\d{2}\.\d{2})", mo_txt)
+                                if m: row[f'mo{i}'] = float(m.group(1))
+
+                        # 平均ST (0.XX)
+                        st_match = re.search(r"(0\.\d{2})", full_text)
+                        if st_match:
+                            row[f'st{i}'] = float(st_match.group(1))
+                        
+                        # F数 (F1, F2...)
+                        f_match = re.search(r"F(\d+)", full_text)
+                        if f_match:
+                            row[f'f{i}'] = int(f_match.group(1))
+                            
+                except: pass
+
+            # 2. 直前情報(beforeinfo)から 展示タイム を取得
             if soup_before:
                 try:
-                    boat_cell = soup_before.select_one(f".is-boatColor{i}")
-                    if boat_cell:
-                        tr = boat_cell.find_parent("tr")
+                    # is-boatColor1 ~ 6 のクラスを持つtdを探す
+                    boat_td = soup_before.select_one(f"td.is-boatColor{i}")
+                    if boat_td:
+                        # その行(tr)を取得
+                        tr = boat_td.find_parent("tr")
                         tds = tr.select("td")
-                        if len(tds) > 4:
-                            for td in tds[4:]:
-                                val = clean_text(td.text)
-                                if re.match(r"^\d\.\d{2}$", val):
+                        # 展示タイムは通常後ろの方にある (td[4]以降)
+                        # 値が "6.XX" のような形式を探す
+                        for td in tds[4:]:
+                            val = clean_text(td.text)
+                            if re.match(r"^\d\.\d{2}$", val):
+                                # 6.50 ~ 7.00 くらいの値が展示タイム
+                                if 6.0 <= float(val) <= 7.5:
                                     row[f'ex{i}'] = float(val)
                                     break
                 except: pass
 
-            # 勝率・F・ST
-            if soup_list:
-                try:
-                    list_cell = soup_list.select_one(f".is-boatColor{i}")
-                    if list_cell:
-                        tr = list_cell.find_parent("tr")
-                        tds = tr.select("td")
-                        full_row_text = " ".join([clean_text(td.text) for td in tds])
-                        
-                        f_match = re.search(r"F(\d+)", full_row_text)
-                        if f_match: row[f'f{i}'] = int(f_match.group(1))
-                        
-                        st_matches = re.findall(r"(\.\d{2}|0\.\d{2})", full_row_text)
-                        if st_matches:
-                            for st_val in st_matches:
-                                v = float(st_val)
-                                if 0.0 < v < 0.5:
-                                    row[f'st{i}'] = v
-                                    break
-                        
-                        wr_matches = re.findall(r"(\d\.\d{2})", full_row_text)
-                        for val in wr_matches:
-                            v = float(val)
-                            if 1.0 <= v <= 9.99:
-                                row[f'wr{i}'] = v
-                                break
-                        
-                        mo_matches = re.findall(r"(\d{2}\.\d{2})", full_row_text)
-                        if mo_matches:
-                            row[f'mo{i}'] = float(mo_matches[0])
-                except: pass
-        
         return row
     except: return None
 
 def process_wrapper(args):
     session, jcd, rno, date_str = args
-    # 並列数が多いので、サーバーへのアクセス集中を避けるためわずかに待機
     time.sleep(random.uniform(0.1, 0.4))
     try:
         return scrape_race_data(session, jcd, rno, date_str)
@@ -259,7 +297,6 @@ if __name__ == "__main__":
     
     csv_columns = get_column_names()
 
-    # ファイルがなければヘッダーを作成
     if not os.path.exists(filename):
         pd.DataFrame(columns=csv_columns).to_csv(filename, index=False)
 
@@ -294,11 +331,7 @@ if __name__ == "__main__":
         
         if results:
             df = pd.DataFrame(results)
-            
-            # カラムが存在しない場合NaNで埋めて、順序を統一する
             df = df.reindex(columns=csv_columns)
-            
-            # 追記モード
             df.to_csv(filename, mode='a', index=False, header=False)
             safe_print(f"  ✅ {len(df)}レース 保存しました")
             total_races += len(df)
