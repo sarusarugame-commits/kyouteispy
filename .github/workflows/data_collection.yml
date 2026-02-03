@@ -57,7 +57,7 @@ jobs:
         with:
           python-version: '3.11'
           
-      - run: pip install pandas requests beautifulsoup4
+      - run: pip install pandas requests beautifulsoup4 curl_cffi lxml
 
       - name: Run Collector (${{ inputs.target_year }}-${{ matrix.s }} ~ ${{ matrix.e }})
         run: |
