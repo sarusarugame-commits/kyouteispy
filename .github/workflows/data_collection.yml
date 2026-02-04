@@ -1,4 +1,4 @@
-name: 20x Parallel Auto Loop
+name: 19x Parallel Auto Loop
 
 on:
   workflow_dispatch:
@@ -18,37 +18,36 @@ permissions:
 
 jobs:
   # ========================================================
-  # 1. 20並列でデータ収集
+  # 1. 19並列でデータ収集
   # ========================================================
   collect:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     strategy:
       fail-fast: false  # 1つの期間が失敗しても他は続行させる
-      max-parallel: 20
+      max-parallel: 19
       matrix:
-        # 1年(365日) ÷ 20 ≈ 18日/スレッド
+        # 1年(366日) ÷ 19 ≈ 19.3日/スレッド
         include:
-          - { s: "01-01", e: "01-18" }
-          - { s: "01-19", e: "02-05" }
-          - { s: "02-06", e: "02-24" }
-          - { s: "02-25", e: "03-14" } # 閏年もこの区間に含まれるのでOK
-          - { s: "03-15", e: "04-01" }
-          - { s: "04-02", e: "04-20" }
-          - { s: "04-21", e: "05-08" }
-          - { s: "05-09", e: "05-27" }
-          - { s: "05-28", e: "06-14" }
-          - { s: "06-15", e: "07-02" }
-          - { s: "07-03", e: "07-21" }
-          - { s: "07-22", e: "08-09" }
-          - { s: "08-10", e: "08-27" }
-          - { s: "08-28", e: "09-14" }
-          - { s: "09-15", e: "10-02" }
-          - { s: "10-03", e: "10-21" }
-          - { s: "10-22", e: "11-08" }
-          - { s: "11-09", e: "11-26" }
-          - { s: "11-27", e: "12-14" }
-          - { s: "12-15", e: "12-31" }
+          - { s: "01-01", e: "01-19" }
+          - { s: "01-20", e: "02-07" }
+          - { s: "02-08", e: "02-26" }
+          - { s: "02-27", e: "03-17" } # 閏年(02-29)もカバー
+          - { s: "03-18", e: "04-05" }
+          - { s: "04-06", e: "04-24" }
+          - { s: "04-25", e: "05-13" }
+          - { s: "05-14", e: "06-02" }
+          - { s: "06-03", e: "06-21" }
+          - { s: "06-22", e: "07-10" }
+          - { s: "07-11", e: "07-29" }
+          - { s: "07-30", e: "08-18" }
+          - { s: "08-19", e: "09-06" }
+          - { s: "09-07", e: "09-25" }
+          - { s: "09-26", e: "10-14" }
+          - { s: "10-15", e: "11-03" }
+          - { s: "11-04", e: "11-22" }
+          - { s: "11-23", e: "12-11" }
+          - { s: "12-12", e: "12-31" }
 
     steps:
       - uses: actions/checkout@v4
@@ -65,12 +64,10 @@ jobs:
           START="$YEAR-${{ matrix.s }}"
           END="$YEAR-${{ matrix.e }}"
           echo "🚀 Running: $START to $END"
-          # 前述のPythonコードが 'collector.py' として保存されている前提
           python collector.py --start $START --end $END
 
       - uses: actions/upload-artifact@v4
         with:
-          # 名前をユニークにする
           name: chunk-${{ matrix.s }}
           path: data/*.csv
           retention-days: 1
@@ -140,12 +137,10 @@ jobs:
           git config --global user.name "BoatBot"
           git config --global user.email "bot@example.com"
           
-          # ファイルが存在しない場合はaddしないように制御
           if ls FINAL_FULL_DATA_*.csv 1> /dev/null 2>&1; then
             git add FINAL_FULL_DATA_*.csv
             git commit -m "Add Data ${{ inputs.target_year }}" || echo "No changes to commit"
             
-            # リベースプルしてプッシュ
             git pull origin main --rebase
             git push origin main
           else
@@ -174,8 +169,7 @@ jobs:
 
           if [ "$NEXT" -le "$END" ]; then
             echo "🔄 $CURRENT年完了！次は $NEXT年 を開始します..."
-            # 現在のブランチ(ref)を引き継いで実行する
-            gh workflow run "20x Parallel Auto Loop" \
+            gh workflow run "19x Parallel Auto Loop" \
               --ref ${{ github.ref_name }} \
               -f target_year=$NEXT \
               -f end_year=$END
